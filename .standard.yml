@@ -1,0 +1,7 @@
+# Standard Ruby configuration
+# https://github.com/standardrb/standard
+ignore:
+  - "test/**/*":
+    - Layout/BlockLength
+  - "mpp.gemspec":
+    - Layout/BlockLength

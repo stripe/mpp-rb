@@ -1,0 +1,9 @@
+source "https://rubygems.org"
+
+gem "sinatra"
+gem "dotenv"
+gem "rackup"
+gem "puma"
+gem "sorbet-runtime"
+gem "mpp-rb", path: "../.."
+gem "stripe"

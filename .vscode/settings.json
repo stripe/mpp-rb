@@ -1,0 +1,18 @@
+{
+  // Use Standard Ruby as the formatter and linter (not vanilla rubocop)
+  "[ruby]": {
+    "editor.defaultFormatter": "testdouble.vscode-standard-ruby",
+    "editor.formatOnSave": true
+  },
+
+  // Silence rubocop-revived for this workspace (no enable toggle exists)
+  "ruby.rubocop.suppressRubocopWarnings": true,
+  "ruby.rubocop.onSave": false,
+  "ruby.rubocop.autocorrectOnSave": false,
+
+  // Standard Ruby extension settings
+  "standardRuby.mode": "enableViaGemfileOrMissingGemfile",
+
+  // Sorbet extension settings
+  "sorbet.enabled": true
+}

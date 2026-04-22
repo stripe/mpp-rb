@@ -1,0 +1,145 @@
+PATH
+  remote: .
+  specs:
+    mpp-rb (0.1.0)
+      base64
+
+GEM
+  remote: https://rubygems.org/
+  specs:
+    addressable (2.9.0)
+      public_suffix (>= 2.0.2, < 8.0)
+    ansi (1.5.0)
+    ast (2.4.3)
+    base64 (0.3.0)
+    benchmark (0.5.0)
+    bigdecimal (4.0.1)
+    builder (3.3.0)
+    crack (1.0.1)
+      bigdecimal
+      rexml
+    erubi (1.13.1)
+    hashdiff (1.2.1)
+    json (2.19.3)
+    language_server-protocol (3.17.0.5)
+    lint_roller (1.1.0)
+    logger (1.7.0)
+    minitest (5.27.0)
+    minitest-reporters (1.7.1)
+      ansi
+      builder
+      minitest (>= 5.0)
+      ruby-progressbar
+    netrc (0.11.0)
+    parallel (1.27.0)
+    parser (3.3.10.2)
+      ast (~> 2.4.1)
+      racc
+    prism (1.9.0)
+    public_suffix (7.0.5)
+    racc (1.8.1)
+    rainbow (3.1.1)
+    rake (13.3.1)
+    rbi (0.3.9)
+      prism (~> 1.0)
+      rbs (>= 3.4.4)
+    rbs (4.0.2)
+      logger
+      prism (>= 1.6.0)
+      tsort
+    regexp_parser (2.11.3)
+    require-hooks (0.2.3)
+    rexml (3.4.4)
+    rubocop (1.84.2)
+      json (~> 2.3)
+      language_server-protocol (~> 3.17.0.2)
+      lint_roller (~> 1.1.0)
+      parallel (~> 1.10)
+      parser (>= 3.3.0.2)
+      rainbow (>= 2.2.2, < 4.0)
+      regexp_parser (>= 2.9.3, < 3.0)
+      rubocop-ast (>= 1.49.0, < 2.0)
+      ruby-progressbar (~> 1.7)
+      unicode-display_width (>= 2.4.0, < 4.0)
+    rubocop-ast (1.49.1)
+      parser (>= 3.3.7.2)
+      prism (~> 1.7)
+    rubocop-performance (1.26.1)
+      lint_roller (~> 1.1)
+      rubocop (>= 1.75.0, < 2.0)
+      rubocop-ast (>= 1.47.1, < 2.0)
+    ruby-progressbar (1.13.0)
+    sorbet (0.6.13059)
+      sorbet-static (= 0.6.13059)
+    sorbet-runtime (0.6.13059)
+    sorbet-static (0.6.13059-universal-darwin)
+    sorbet-static (0.6.13059-x86_64-linux)
+    sorbet-static-and-runtime (0.6.13059)
+      sorbet (= 0.6.13059)
+      sorbet-runtime (= 0.6.13059)
+    spoom (1.7.11)
+      erubi (>= 1.10.0)
+      prism (>= 0.28.0)
+      rbi (>= 0.3.3)
+      rbs (>= 4.0.0.dev.4)
+      rexml (>= 3.2.6)
+      sorbet-static-and-runtime (>= 0.5.10187)
+      thor (>= 0.19.2)
+    standard (1.54.0)
+      language_server-protocol (~> 3.17.0.2)
+      lint_roller (~> 1.0)
+      rubocop (~> 1.84.0)
+      standard-custom (~> 1.0.0)
+      standard-performance (~> 1.8)
+    standard-custom (1.0.2)
+      lint_roller (~> 1.0)
+      rubocop (~> 1.50)
+    standard-performance (1.9.0)
+      lint_roller (~> 1.1)
+      rubocop-performance (~> 1.26.0)
+    stripe (19.0.0)
+      bigdecimal
+      logger
+    tapioca (0.18.0)
+      benchmark
+      bundler (>= 2.2.25)
+      netrc (>= 0.11.0)
+      parallel (>= 1.21.0)
+      rbi (>= 0.3.7)
+      require-hooks (>= 0.2.2)
+      sorbet-static-and-runtime (>= 0.5.11087)
+      spoom (>= 1.7.9)
+      thor (>= 1.2.0)
+      tsort
+      yard-sorbet
+    thor (1.5.0)
+    tsort (0.2.0)
+    unicode-display_width (3.2.0)
+      unicode-emoji (~> 4.1)
+    unicode-emoji (4.2.0)
+    webmock (3.26.2)
+      addressable (>= 2.8.0)
+      crack (>= 0.3.2)
+      hashdiff (>= 0.4.0, < 2.0.0)
+    yard (0.9.42)
+    yard-sorbet (0.9.0)
+      sorbet-runtime
+      yard
+
+PLATFORMS
+  arm64-darwin-25
+  x86_64-linux
+
+DEPENDENCIES
+  minitest (~> 5.25)
+  minitest-reporters (~> 1.7)
+  mpp-rb!
+  rake (~> 13.0)
+  sorbet-static-and-runtime
+  standard (~> 1.44)
+  stripe
+  tapioca
+  webmock (~> 3.24)
+
+BUNDLED WITH
+   2.5.4

@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "testdouble.vscode-standard-ruby",
+    "sorbet.sorbet-vscode-extension"
+  ],
+  "unwantedRecommendations": [
+    "misogi.ruby-rubocop",
+    "rubocop.vscode-rubocop",
+    "lorankloeze.ruby-rubocop-revived"
+  ]
+}
