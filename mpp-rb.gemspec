@@ -15,7 +15,7 @@ Gem::Specification.new do |spec|
   spec.files = Dir["lib/**/*.rb", "sig/**/*.rbs", "LICENSE", "README.md"]
   spec.require_paths = ["lib"]
 
-  spec.add_dependency "base64"
+  spec.add_dependency "base64", "~> 0.3"
 
   # All runtime deps are stdlib (openssl, base64, json, bigdecimal, time, uri)
   # Optional deps are autoloaded:
