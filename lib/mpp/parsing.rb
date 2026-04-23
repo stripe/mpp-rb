@@ -12,7 +12,7 @@ module Mpp
     MAX_HEADER_PAYLOAD_SIZE = T.let(16 * 1024, Integer)
 
     # RFC 9110 auth-param regex: key="value" or key=token
-    AUTH_PARAM_RE = /([a-zA-Z_][\w-]*)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,]+))/
+    AUTH_PARAM_RE = /([a-zA-Z_][\w-]*+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,]++))/
 
     module_function
 
@@ -43,7 +43,7 @@ module Mpp
     def escape_quoted(str)
       Kernel.raise Mpp::ParseError, "Header value contains invalid CRLF characters" if str.include?("\r") || str.include?("\n")
 
-      str.gsub("\\", "\\\\\\\\").gsub('"', '\\"')
+      str.gsub(/[\\"]/) { |c| "\\#{c}" }
     end
 
     # Unescape a quoted-string value.
