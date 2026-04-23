@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    mpp-rb (0.1.0)
+    mpp-rb (0.1.1)
       base64 (~> 0.3)
 
 GEM
