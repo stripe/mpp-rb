@@ -24,4 +24,5 @@ Gem::Specification.new do |spec|
   #   rlp                — fee payer envelope
 
   spec.metadata["rubygems_mfa_required"] = "true"
+  spec.metadata["source_code_uri"] = "https://github.com/stripe/mpp-rb"
 end
