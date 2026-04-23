@@ -121,6 +121,13 @@ Tempo charge transaction construction is implemented directly in Ruby. Optional 
 
 Built on the ["Payment" HTTP Authentication Scheme](https://datatracker.ietf.org/doc/draft-ryan-httpauth-payment/). See [mpp-specs](https://tempoxyz.github.io/mpp-specs/) for the full specification.
 
+## Releasing
+
+1. Update the version in `lib/mpp/version.rb`
+2. Commit: `git commit -am "v0.x.x"`
+3. Tag: `git tag v0.x.x`
+4. Push: `git push origin main --tags`
+
 ## License
 
 MIT
