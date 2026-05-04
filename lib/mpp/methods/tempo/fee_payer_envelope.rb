@@ -17,8 +17,8 @@ module Mpp
           Kernel.require "rlp"
 
           sender_sig = signed_tx.sender_signature
-          sig_bytes = sender_sig.respond_to?(:to_bytes) ? sender_sig.to_bytes : sender_sig.to_s.b
-          sender_addr = signed_tx.sender_address.to_s.b
+          sig_bytes = normalize_signature(sender_sig.respond_to?(:to_bytes) ? sender_sig.to_bytes : sender_sig.to_s.b)
+          sender_addr = pack_hex(signed_tx.sender_address)
 
           fields = [
             signed_tx.chain_id,
@@ -26,12 +26,12 @@ module Mpp
             signed_tx.max_fee_per_gas,
             signed_tx.gas_limit,
             signed_tx.calls.map(&:as_rlp_list),
-            signed_tx.access_list.map(&:as_rlp_list),
+            signed_tx.access_list.map { |entry| entry.respond_to?(:as_rlp_list) ? entry.as_rlp_list : entry },
             signed_tx.nonce_key,
             signed_tx.nonce,
             encode_optional_uint(signed_tx.valid_before),
             encode_optional_uint(signed_tx.valid_after),
-            signed_tx.fee_token ? signed_tx.fee_token.to_s.b : "".b,
+            signed_tx.fee_token ? pack_hex(signed_tx.fee_token) : "".b,
             sender_addr,
             signed_tx.tempo_authorization_list.to_a
           ]
@@ -39,7 +39,7 @@ module Mpp
           fields << RLP.decode(signed_tx.key_authorization) if signed_tx.key_authorization
           fields << sig_bytes
 
-          [TYPE_ID].pack("C") + RLP.include(fields)
+          [TYPE_ID].pack("C") + RLP.encode(fields)
         end
 
         # Decode a 0x78 fee payer envelope.
@@ -58,7 +58,7 @@ module Mpp
 
           # 15 fields = key_authorization present (index 13), signature at 14
           # 14 fields = no key_authorization, signature at 13
-          key_authorization = (RLP.include(decoded[13]) if decoded.length == 15)
+          key_authorization = (RLP.encode(decoded[13]) if decoded.length == 15)
 
           [decoded, sender_address.to_s.b, sender_signature.to_s.b, key_authorization]
         end
@@ -67,6 +67,21 @@ module Mpp
           return "".b unless value
 
           value.is_a?(Integer) ? value : value.to_i
+        end
+
+        def pack_hex(value)
+          [value.to_s.delete_prefix("0x")].pack("H*")
+        end
+
+        def normalize_signature(signature)
+          bytes = signature.b
+          Kernel.raise ArgumentError, "signature must be 65 bytes, got #{bytes.bytesize}" unless bytes.bytesize == 65
+
+          v = bytes.getbyte(64)
+          parity = (v >= 27) ? v - 27 : v
+          Kernel.raise ArgumentError, "signature parity must be 0 or 1, got #{v}" unless [0, 1].include?(parity)
+
+          bytes[0, 64] + [parity].pack("C")
         end
       end
     end

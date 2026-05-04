@@ -13,4 +13,8 @@ module Eth
     def sign(data); end
     def self.personal_recover(data, signature); end
   end
+
+  module Signature
+    def self.recover(data, signature); end
+  end
 end
