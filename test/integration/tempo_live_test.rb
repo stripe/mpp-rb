@@ -41,7 +41,23 @@ class TempoLiveIntegrationTest < Minitest::Test
 
     response = Mpp::Client.get(server.url, methods: [client_method(account: payer)])
 
-    assert_equal "200", response.code
+    assert_equal "200", response.code, response.body
+    refute_nil response["Payment-Receipt"]
+    body = JSON.parse(response.body)
+    assert_equal "paid", body.fetch("status")
+  ensure
+    server&.close
+  end
+
+  def test_client_transport_completes_fee_payer_402_roundtrip
+    payer = funded_account
+    recipient = funded_account
+    fee_payer = funded_account
+    server = PaidServer.new(recipient: recipient.address, chain_id: chain_id, fee_payer: fee_payer)
+
+    response = Mpp::Client.get(server.url, methods: [client_method(account: payer)])
+
+    assert_equal "200", response.code, response.body
     refute_nil response["Payment-Receipt"]
     body = JSON.parse(response.body)
     assert_equal "paid", body.fetch("status")
@@ -233,14 +249,16 @@ class TempoLiveIntegrationTest < Minitest::Test
   class PaidServer
     attr_reader :url
 
-    def initialize(recipient:, chain_id:)
+    def initialize(recipient:, chain_id:, fee_payer: nil)
       method = Mpp::Methods::Tempo.tempo(
         chain_id: chain_id,
         rpc_url: RPC_URL,
         currency: CURRENCY,
         recipient: recipient,
+        fee_payer: fee_payer,
         intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: RPC_URL)}
       )
+      @sponsored = !fee_payer.nil?
       @handler = Mpp.create(method: method, realm: REALM, secret_key: SECRET_KEY)
       @memo = Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: SecureRandom.hex(6))
       @server = TCPServer.new("127.0.0.1", 0)
@@ -277,7 +295,13 @@ class TempoLiveIntegrationTest < Minitest::Test
         headers[key.downcase] = value.strip if key && value
       end
 
-      result = @handler.charge(headers["authorization"], "1.00", chain_id: chain_id, memo: @memo)
+      result = @handler.charge(
+        headers["authorization"],
+        "1.00",
+        chain_id: chain_id,
+        memo: @memo,
+        fee_payer: @sponsored
+      )
       if result.is_a?(Mpp::Challenge)
         response = Mpp::Server::Decorator.make_challenge_response(result, @handler.realm)
         write_response(socket, response["status"], response["headers"], response["body"])

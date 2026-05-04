@@ -48,14 +48,12 @@ module Mpp
             Eth::Util.keccak256([TYPE_ID].pack("C") + RLP.encode(signing_rlp_fields))
           end
 
-          # Hash for fee payer to sign — includes sender_signature in the RLP.
+          # Hash for fee payer to sign.
           def fee_payer_signature_hash
             require_eth!
             require_rlp!
 
-            fields = unsigned_rlp_fields
-            fields.insert(11, sender_signature)
-            Eth::Util.keccak256([TYPE_ID].pack("C") + RLP.encode(fields))
+            Eth::Util.keccak256([FeePayer::TYPE_ID].pack("C") + RLP.encode(fee_payer_signing_rlp_fields))
           end
 
           private
@@ -88,6 +86,26 @@ module Mpp
               fee_payer_field,
               tempo_authorization_list || EMPTY_LIST
             ]
+          end
+
+          def fee_payer_signing_rlp_fields
+            fields = [
+              chain_id,
+              max_priority_fee_per_gas,
+              max_fee_per_gas,
+              gas_limit,
+              calls.map(&:as_rlp_list),
+              access_list || EMPTY_LIST,
+              nonce_key,
+              nonce,
+              encode_optional_uint(valid_before),
+              encode_optional_uint(valid_after),
+              fee_token ? pack_hex(fee_token) : "".b,
+              pack_hex(sender_address),
+              tempo_authorization_list || EMPTY_LIST
+            ]
+            fields << key_authorization if key_authorization
+            fields
           end
 
           def fee_payer_field

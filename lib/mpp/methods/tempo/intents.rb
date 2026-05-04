@@ -335,7 +335,7 @@ module Mpp
             max_fee_per_gas: int.call(decoded[2]),
             gas_limit: int.call(decoded[3]),
             calls: calls,
-            access_list: Transaction::EMPTY_LIST,
+            access_list: decoded[5] || Transaction::EMPTY_LIST,
             nonce_key: int.call(decoded[6]),
             nonce: int.call(decoded[7]),
             valid_before: int.call(decoded[8]),
@@ -350,7 +350,7 @@ module Mpp
 
           # Verify sender signature
           sender_hash = tx_for_recovery.signature_hash
-          recovered = Eth::Key.personal_recover(sender_hash, "0x#{sender_sig.unpack1("H*")}")
+          recovered = Eth::Signature.recover(sender_hash, "0x#{sender_sig.unpack1("H*")}")
           recovered_addr = Eth::Util.public_key_to_address(recovered).to_s
           envelope_addr = "0x#{sender_addr_bytes.unpack1("H*")}"
 
@@ -364,7 +364,7 @@ module Mpp
 
           tx_to_sign = tx_for_recovery.with(fee_token: resolved_fee_token)
 
-          # Fee payer signs over fields including sender_signature
+          # Fee payer signs the 0x78 payload, which identifies the recovered sender.
           fee_payer_hash = tx_to_sign.fee_payer_signature_hash
           fee_payer_sig = fee_payer.sign_hash(fee_payer_hash)
 
