@@ -51,12 +51,12 @@ module Mpp
           case payload_data["type"]
           when "hash"
             payload = Schemas::HashCredentialPayload.new(type: "hash", hash: payload_data["hash"])
-            verify_hash(payload, req)
+            verify_hash(payload, req, credential: credential)
           when "transaction"
             payload = Schemas::TransactionCredentialPayload.new(
               type: "transaction", signature: payload_data["signature"]
             )
-            verify_transaction(payload, req)
+            verify_transaction(payload, req, credential: credential)
           when "proof"
             payload = Schemas::ProofCredentialPayload.new(
               type: "proof", signature: payload_data["signature"]
@@ -75,7 +75,7 @@ module Mpp
           @rpc_url
         end
 
-        def verify_hash(payload, request)
+        def verify_hash(payload, request, credential:)
           if @store
             store_key = "mpp:charge:#{payload.hash.downcase}"
             raise Mpp::VerificationError, "Transaction hash already used" unless @store.put_if_absent(store_key,
@@ -87,17 +87,17 @@ module Mpp
 
           raise Mpp::VerificationError, "Transaction not found" unless result
           raise Mpp::VerificationError, "Transaction reverted" unless result["status"] == "0x1"
-          unless verify_transfer_logs(
-            result, request
-          )
+          matched_logs = match_transfer_logs(result, request, expected_sender: result["from"])
+          unless matched_logs.any?
             raise Mpp::VerificationError,
               "Transaction must contain a Transfer log matching request parameters"
           end
+          assert_challenge_bound_memo(matched_logs, credential.challenge) unless request.method_details.memo
 
           Mpp::Receipt.success(payload.hash)
         end
 
-        def verify_transaction(payload, request)
+        def verify_transaction(payload, request, credential:)
           validate_transaction_payload(payload.signature, request)
 
           raw_tx = payload.signature
@@ -128,18 +128,23 @@ module Mpp
 
           raise Mpp::VerificationError, "Transaction receipt not found after retries" unless receipt_data
           raise Mpp::VerificationError, "Transaction reverted" unless receipt_data["status"] == "0x1"
-          unless verify_transfer_logs(
-            receipt_data, request
-          )
+          matched_logs = match_transfer_logs(receipt_data, request, expected_sender: receipt_data["from"])
+          unless matched_logs.any?
             raise Mpp::VerificationError,
               "Transaction must contain a Transfer log matching request parameters"
           end
+          assert_challenge_bound_memo(matched_logs, credential.challenge) unless request.method_details.memo
 
           Mpp::Receipt.success(tx_hash)
         end
 
         def verify_transfer_logs(receipt, request, expected_sender: nil)
+          match_transfer_logs(receipt, request, expected_sender: expected_sender).any?
+        end
+
+        def match_transfer_logs(receipt, request, expected_sender: nil)
           expected_memo = request.method_details.memo
+          matched_logs = []
 
           (receipt["logs"] || []).each do |log|
             next unless log["address"]&.downcase == request.currency.downcase
@@ -164,19 +169,42 @@ module Mpp
               memo = topics[3]
               memo_clean = expected_memo.downcase
               memo_clean = "0x#{memo_clean}" unless memo_clean.start_with?("0x")
-              return true if amount == Integer(request.amount) && memo.downcase == memo_clean
+              if amount == Integer(request.amount) && memo.downcase == memo_clean
+                matched_logs << {kind: :memo, memo: memo}
+              end
             else
-              next unless topics[0] == TRANSFER_TOPIC
+              case topics[0]
+              when TRANSFER_WITH_MEMO_TOPIC
+                next if topics.length < 4
 
-              data = log.fetch("data", "0x")
-              next if data.length < 66
+                data = log.fetch("data", "0x")
+                next if data.length < 66
 
-              amount = data.delete_prefix("0x").to_i(16)
-              return true if amount == Integer(request.amount)
+                amount = data[2, 64].to_i(16)
+                matched_logs << {kind: :memo, memo: topics[3]} if amount == Integer(request.amount)
+              when TRANSFER_TOPIC
+                data = log.fetch("data", "0x")
+                next if data.length < 66
+
+                amount = data.delete_prefix("0x").to_i(16)
+                matched_logs << {kind: :transfer} if amount == Integer(request.amount)
+              end
             end
           end
 
-          false
+          matched_logs.sort_by { |log| (log[:kind] == :memo) ? 0 : 1 }
+        end
+
+        def assert_challenge_bound_memo(matched_logs, challenge)
+          bound = matched_logs.any? do |log|
+            log[:kind] == :memo &&
+              Attribution.verify_server(log[:memo], challenge.realm) &&
+              Attribution.verify_challenge_binding(log[:memo], challenge.id)
+          end
+
+          return if bound
+
+          raise Mpp::VerificationError, "Payment verification failed: memo is not bound to this challenge"
         end
 
         def validate_transaction_payload(signature, request)

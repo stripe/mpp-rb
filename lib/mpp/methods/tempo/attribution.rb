@@ -80,6 +80,19 @@ module Mpp
           memo_server == fingerprint(server_id)
         end
 
+        # Verify challenge-bound nonce in memo.
+        def verify_challenge_binding(memo, challenge_id)
+          return false unless challenge_id
+          return false unless mpp_memo?(memo)
+
+          begin
+            memo_nonce = [memo[52, 14]].pack("H*")
+          rescue ArgumentError
+            return false
+          end
+          memo_nonce == keccak256(challenge_id.encode(Encoding::UTF_8))[0, 7]
+        end
+
         # Decoded memo structure.
         DecodedMemo = Data.define(:version, :server_fingerprint, :client_fingerprint, :nonce)
 
