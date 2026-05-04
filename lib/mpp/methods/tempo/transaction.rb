@@ -45,7 +45,7 @@ module Mpp
             require_eth!
             require_rlp!
 
-            Eth::Util.keccak256([TYPE_ID].pack("C") + RLP.encode(unsigned_rlp_fields))
+            Eth::Util.keccak256([TYPE_ID].pack("C") + RLP.encode(signing_rlp_fields))
           end
 
           # Hash for fee payer to sign — includes sender_signature in the RLP.
@@ -61,14 +61,19 @@ module Mpp
           private
 
           def rlp_fields
+            fields = signing_rlp_fields
+            fields << signature_envelope(sender_signature) if sender_signature
+            fields
+          end
+
+          def signing_rlp_fields
             fields = unsigned_rlp_fields
-            fields.insert(11, sender_signature)
-            fields.insert(12, fee_payer_signature || EMPTY_SIGNATURE)
+            fields << key_authorization if key_authorization
             fields
           end
 
           def unsigned_rlp_fields
-            fields = [
+            [
               chain_id,
               max_priority_fee_per_gas,
               max_fee_per_gas,
@@ -80,10 +85,44 @@ module Mpp
               encode_optional_uint(valid_before),
               encode_optional_uint(valid_after),
               fee_token ? pack_hex(fee_token) : "".b,
+              fee_payer_field,
               tempo_authorization_list || EMPTY_LIST
             ]
-            fields << key_authorization if key_authorization
-            fields
+          end
+
+          def fee_payer_field
+            return signature_tuple(fee_payer_signature) if fee_payer_signature && fee_payer_signature != EMPTY_SIGNATURE
+            return EMPTY_SIGNATURE if fee_token.nil?
+
+            "".b
+          end
+
+          def signature_tuple(signature)
+            normalized = normalized_signature(signature)
+            [
+              normalized.getbyte(64).zero? ? "".b : normalized[64],
+              trim_leading_zeroes(normalized[0, 32]),
+              trim_leading_zeroes(normalized[32, 32])
+            ]
+          end
+
+          def signature_envelope(signature)
+            normalized_signature(signature)
+          end
+
+          def normalized_signature(signature)
+            bytes = signature.b
+            raise ArgumentError, "signature must be 65 bytes, got #{bytes.bytesize}" unless bytes.bytesize == 65
+
+            v = bytes.getbyte(64)
+            parity = (v >= 27) ? v - 27 : v
+            raise ArgumentError, "signature parity must be 0 or 1, got #{v}" unless [0, 1].include?(parity)
+
+            bytes[0, 64] + [parity].pack("C")
+          end
+
+          def trim_leading_zeroes(value)
+            value.sub(/\A\x00+/n, "")
           end
 
           def pack_hex(value)
