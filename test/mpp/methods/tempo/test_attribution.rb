@@ -86,6 +86,7 @@ class TestAttribution < Minitest::Test
     d2 = Mpp::Methods::Tempo::Attribution.decode(m2)
 
     assert_equal d1.nonce, d2.nonce
+    assert Mpp::Methods::Tempo::Attribution.verify_challenge_binding(m1, "chal-123")
   end
 
   def test_encode_with_different_challenge_ids
@@ -96,6 +97,7 @@ class TestAttribution < Minitest::Test
     d2 = Mpp::Methods::Tempo::Attribution.decode(m2)
 
     refute_equal d1.nonce, d2.nonce
+    refute Mpp::Methods::Tempo::Attribution.verify_challenge_binding(m1, "chal-b")
   end
 
   def test_encode_without_challenge_id_is_random
