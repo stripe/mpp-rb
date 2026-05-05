@@ -60,7 +60,6 @@ GEM
       minitest (>= 5.0)
       ruby-progressbar
     netrc (0.11.0)
-    openssl (3.3.2)
     parallel (1.27.0)
     parser (3.3.10.2)
       ast (~> 2.4.1)
@@ -185,4 +184,4 @@ DEPENDENCIES
   webmock (~> 3.24)
 
 BUNDLED WITH
-   2.5.4
+   2.6.9
