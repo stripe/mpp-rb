@@ -4,12 +4,13 @@ source "https://rubygems.org"
 
 gemspec
 
+gem "rake", "~> 13.0"
+
 group :development, :test do
   gem "eth", "~> 0.5"
   gem "minitest", "~> 5.25"
   gem "minitest-reporters", "~> 1.7"
   gem "rlp", "~> 0.7"
-  gem "rake", "~> 13.0"
   gem "standard", "~> 1.44"
   gem "sorbet-static-and-runtime"
   gem "tapioca", require: false
