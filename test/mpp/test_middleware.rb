@@ -31,6 +31,8 @@ class TestMiddleware < Minitest::Test
     assert_equal 402, status
     assert headers.key?("WWW-Authenticate")
     assert_equal "application/problem+json", headers["Content-Type"]
+    assert_equal "no-store", headers["Cache-Control"]
+    assert_vary_authorization headers
   end
 
   def test_attaches_receipt_on_successful_payment
@@ -58,6 +60,8 @@ class TestMiddleware < Minitest::Test
 
     assert_equal 200, status
     assert headers.key?("Payment-Receipt")
+    assert_equal "no-store", headers["Cache-Control"]
+    assert_vary_authorization headers
     assert_equal ["OK"], body
   end
 
@@ -68,6 +72,13 @@ class TestMiddleware < Minitest::Test
       "REQUEST_METHOD" => "GET",
       "PATH_INFO" => "/resource"
     }
+  end
+
+  def assert_vary_authorization(headers)
+    vary_fields = headers.fetch("Vary", "").split(",").map do |field|
+      field.strip.downcase
+    end
+    assert_includes vary_fields, "authorization"
   end
 
   def mock_handler

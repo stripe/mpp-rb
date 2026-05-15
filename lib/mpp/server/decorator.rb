@@ -20,6 +20,7 @@ module Mpp
           "Cache-Control" => "no-store",
           "Content-Type" => "application/problem+json"
         }
+        Mpp::Server::Middleware.mark_authorization_bound_response(headers)
         {
           "_mpp_challenge" => true,
           "status" => 402,
