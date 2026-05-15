@@ -43,8 +43,24 @@ module Mpp
 
         _credential, receipt = result
         headers["Payment-Receipt"] = receipt.to_payment_receipt
+        self.class.mark_authorization_bound_response(headers)
 
         [status, headers, body]
+      end
+
+      sig { params(headers: T::Hash[T.untyped, T.untyped]).void }
+      def self.mark_authorization_bound_response(headers)
+        headers["Cache-Control"] = "no-store"
+
+        vary_values = headers["Vary"].to_s.split(",").map do |value|
+          value.strip.downcase
+        end
+        return if vary_values.include?("*") || vary_values.include?("authorization")
+
+        headers["Vary"] = [headers["Vary"], "Authorization"]
+          .compact
+          .reject(&:empty?)
+          .join(", ")
       end
     end
   end
