@@ -43,9 +43,10 @@ module Mpp
         reference: String,
         timestamp: T.nilable(Time),
         method: String,
-        external_id: T.nilable(String)
+        external_id: T.nilable(String),
+        extra: T.nilable(T::Hash[String, T.untyped])
       ).returns(Receipt)
     end
-    def self.success(reference, timestamp: nil, method: "tempo", external_id: nil); end
+    def self.success(reference, timestamp: nil, method: "tempo", external_id: nil, extra: nil); end
   end
 end
