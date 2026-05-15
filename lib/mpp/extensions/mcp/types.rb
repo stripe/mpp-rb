@@ -182,7 +182,8 @@ module Mpp
           Mpp::Receipt.new(
             status: status,
             timestamp: Time.iso8601(timestamp.gsub("Z", "+00:00")),
-            reference: reference || ""
+            reference: reference || "",
+            method: method
           )
         end
 

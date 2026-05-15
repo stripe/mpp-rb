@@ -148,6 +148,22 @@ class TestMCPTypes < Minitest::Test
     assert meta.key?("org.paymentauth/receipt")
   end
 
+  def test_mcp_receipt_to_core_preserves_method
+    receipt = Mpp::Extensions::MCP::MCPReceipt.new(
+      status: "success",
+      challenge_id: "ch_abc",
+      method: "stripe",
+      timestamp: "2026-01-15T12:00:30Z",
+      reference: "pi_123"
+    )
+
+    core_receipt = receipt.to_core
+
+    assert_instance_of Mpp::Receipt, core_receipt
+    assert_equal "stripe", core_receipt.method
+    assert_equal "pi_123", core_receipt.reference
+  end
+
   def test_mcp_receipt_from_core
     core_receipt = Mpp::Receipt.new(
       status: "success",
