@@ -18,13 +18,14 @@ module Mpp
     end
 
     # Create a success receipt with current timestamp.
-    def self.success(reference, timestamp: nil, method: "tempo", external_id: nil)
+    def self.success(reference, timestamp: nil, method: "tempo", external_id: nil, extra: nil)
       new(
         status: "success",
         timestamp: timestamp || Time.now.utc,
         reference: reference,
         method: method,
-        external_id: external_id
+        external_id: external_id,
+        extra: extra
       )
     end
   end
