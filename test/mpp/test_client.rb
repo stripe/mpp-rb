@@ -129,6 +129,36 @@ class TestClientTransport < Minitest::Test
 
     assert_equal "402", response.code
   end
+
+  def test_handles_merged_payment_challenges
+    unsupported = Mpp::Challenge.create(
+      secret_key: "test-secret",
+      realm: "api.example.com",
+      method: "other",
+      intent: "charge",
+      request: {"amount" => "1000000"},
+      expires: Mpp::Expires.minutes(5)
+    )
+    supported = Mpp::Challenge.create(
+      secret_key: "test-secret",
+      realm: "api.example.com",
+      method: "tempo",
+      intent: "charge",
+      request: {"amount" => "1000000"},
+      expires: Mpp::Expires.minutes(5)
+    )
+    www_auth = "#{unsupported.to_www_authenticate("api.example.com")}, #{supported.to_www_authenticate("api.example.com")}"
+
+    stub_request(:get, "https://api.example.com/resource")
+      .to_return(status: 402, headers: {"WWW-Authenticate" => www_auth})
+      .then
+      .to_return(status: 200, body: "paid")
+
+    response = @transport.get("https://api.example.com/resource")
+
+    assert_equal "200", response.code
+    assert_equal "paid", response.body
+  end
 end
 
 class TestClientConvenience < Minitest::Test

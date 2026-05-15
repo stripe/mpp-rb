@@ -100,11 +100,10 @@ module Mpp
       sig { params(www_auth_headers: T.untyped).returns(T::Array[T.untyped]) }
       def find_matching_challenge(www_auth_headers)
         www_auth_headers.each do |header|
-          next unless header.downcase.start_with?("payment ")
-
           begin
-            parsed = Mpp::Challenge.from_www_authenticate(header)
-            return [parsed, @methods[parsed.method]] if @methods.key?(parsed.method)
+            Mpp::Challenge.from_www_authenticate_list(header).each do |parsed|
+              return [parsed, @methods[parsed.method]] if @methods.key?(parsed.method)
+            end
           rescue Mpp::ParseError
             next
           end
