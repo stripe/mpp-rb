@@ -56,12 +56,29 @@ module Mpp
     sig { params(params_str: T.untyped).returns(T::Hash[T.untyped, T.untyped]) }
     def parse_auth_params(params_str)
       params = {}
+      pos = 0
+      first = true
+
       params_str.scan(AUTH_PARAM_RE) do |key, quoted_val, token_val|
+        match = T.must(Regexp.last_match)
+        separator = T.must(params_str[pos...match.begin(0)])
+        if first
+          Kernel.raise Mpp::ParseError, "Malformed authentication parameters" unless separator.strip.empty?
+        else
+          Kernel.raise Mpp::ParseError, "Malformed authentication parameters" unless separator.match?(/\A\s*,\s*\z/)
+        end
+
         Kernel.raise Mpp::ParseError, "Duplicate parameter: #{key}" if params.key?(key)
 
         value = quoted_val.nil? ? token_val : unescape_quoted(quoted_val)
         params[key] = value
+        pos = match.end(0)
+        first = false
       end
+
+      tail = T.must(params_str[pos..])
+      Kernel.raise Mpp::ParseError, "Malformed authentication parameters" unless tail.strip.empty?
+
       params
     end
 
