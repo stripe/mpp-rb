@@ -121,6 +121,11 @@ Tempo charge transaction construction is implemented directly in Ruby. Optional 
 
 Built on the ["Payment" HTTP Authentication Scheme](https://datatracker.ietf.org/doc/draft-ryan-httpauth-payment/). See [mpp-specs](https://tempoxyz.github.io/mpp-specs/) for the full specification.
 
+## Interop
+
+See [Ruby interop adapter](./docs/interop-adapter.md) for the proposed adapter
+contract for cross-language MPP conformance testing.
+
 ## Releasing
 
 1. Update the version in `lib/mpp/version.rb`
