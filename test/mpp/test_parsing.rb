@@ -67,6 +67,23 @@ class TestParsing < Minitest::Test
     assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate('Payment id="abc"') }
   end
 
+  def test_parse_www_authenticate_rejects_malformed_auth_params
+    challenge = Mpp::Challenge.create(
+      secret_key: "test-secret",
+      realm: "api.example.com",
+      method: "tempo",
+      intent: "charge",
+      request: {"amount" => "1000000"}
+    )
+    header = challenge.to_www_authenticate("api.example.com")
+
+    missing_separator = header.sub(", realm=", " realm=")
+    trailing_junk = "#{header} not-a-param"
+
+    assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate(missing_separator) }
+    assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate(trailing_junk) }
+  end
+
   def test_credential_roundtrip
     echo = Mpp::ChallengeEcho.new(
       id: "test-id",
