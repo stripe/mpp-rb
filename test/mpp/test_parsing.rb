@@ -241,6 +241,45 @@ class TestParsing < Minitest::Test
     assert_equal "other", result[1].method
   end
 
+  def test_from_www_authenticate_list_ignores_payment_scheme_inside_quotes
+    c1 = Mpp::Challenge.create(
+      secret_key: "s1",
+      realm: "api, Payment realm",
+      method: "tempo",
+      intent: "charge",
+      request: {"amount" => "100"}
+    )
+    c2 = Mpp::Challenge.create(
+      secret_key: "s2",
+      realm: "api.example.com",
+      method: "stripe",
+      intent: "charge",
+      request: {"amount" => "200"}
+    )
+    header = "#{c1.to_www_authenticate("api, Payment realm")}, #{c2.to_www_authenticate("api.example.com")}"
+    result = Mpp::Challenge.from_www_authenticate_list(header)
+
+    assert_equal 2, result.length
+    assert_equal "api, Payment realm", result[0].realm
+    assert_equal "tempo", result[0].method
+    assert_equal "stripe", result[1].method
+  end
+
+  def test_from_www_authenticate_list_stops_before_next_non_payment_scheme
+    challenge = Mpp::Challenge.create(
+      secret_key: "test-secret",
+      realm: "api.example.com",
+      method: "tempo",
+      intent: "charge",
+      request: {"amount" => "1000000"}
+    )
+    header = "#{challenge.to_www_authenticate("api.example.com")}, Bearer realm=\"fallback\""
+    result = Mpp::Challenge.from_www_authenticate_list(header)
+
+    assert_equal 1, result.length
+    assert_equal challenge.id, result[0].id
+  end
+
   def test_from_www_authenticate_list_empty
     assert_equal [], Mpp::Challenge.from_www_authenticate_list("Bearer token123")
     assert_equal [], Mpp::Challenge.from_www_authenticate_list("")

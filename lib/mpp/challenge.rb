@@ -61,15 +61,79 @@ module Mpp
     # Parse multiple Payment challenges from a merged WWW-Authenticate header.
     # Handles RFC 9110 §11.6.1 comma-separated authentication schemes.
     def self.from_www_authenticate_list(header)
-      indices = []
-      header.scan(/Payment\s+/i) { indices << T.must(Regexp.last_match).begin(0) }
+      indices = payment_scheme_indices(header)
       return [] if indices.empty?
 
       indices.each_with_index.map do |start_idx, i|
-        end_idx = (i + 1 < indices.length) ? indices[i + 1] : header.length
+        end_idx = if i + 1 < indices.length
+          indices[i + 1]
+        else
+          next_auth_scheme_index(header, start_idx + "Payment".length) || header.length
+        end
         chunk = T.must(header[start_idx...end_idx]).sub(/,\s*$/, "")
         from_www_authenticate(chunk)
       end
+    end
+
+    def self.payment_scheme_indices(header)
+      indices = []
+      each_auth_scheme_index(header) do |index, scheme|
+        indices << index if scheme.casecmp("Payment").zero?
+      end
+      indices
+    end
+
+    def self.next_auth_scheme_index(header, offset)
+      each_auth_scheme_index(header, offset) do |index, _scheme|
+        return index
+      end
+      nil
+    end
+
+    def self.each_auth_scheme_index(header, offset = 0)
+      in_quote = false
+      escaped = false
+      i = offset
+
+      while i < header.length
+        char = T.must(header[i])
+
+        if in_quote
+          if escaped
+            escaped = false
+          elsif char == "\\"
+            escaped = true
+          elsif char == "\""
+            in_quote = false
+          end
+          i += 1
+          next
+        end
+
+        if char == "\""
+          in_quote = true
+          i += 1
+          next
+        end
+
+        if scheme_boundary?(header, i)
+          match = T.must(header[i..]).match(/\A([A-Za-z][A-Za-z0-9._~+\/-]*)\s+/)
+          if match
+            yield i, T.must(match[1])
+            i += T.must(match[0]).length
+            next
+          end
+        end
+
+        i += 1
+      end
+    end
+
+    def self.scheme_boundary?(header, index)
+      return true if index == 0
+
+      previous = T.must(header[0...index]).rstrip
+      previous.end_with?(",")
     end
 
     # Serialize to a WWW-Authenticate header value.
