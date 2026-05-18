@@ -22,22 +22,44 @@ module Mpp
       sig { returns(T::Hash[String, T.untyped]) }
       attr_reader :defaults
 
-      sig { params(method: T.untyped, realm: String, secret_key: String, defaults: T.nilable(T::Hash[String, T.untyped])).void }
-      def initialize(method:, realm:, secret_key:, defaults: nil)
+      sig { params(method: T.untyped, realm: String, secret_key: String, defaults: T.nilable(T::Hash[String, T.untyped]), events: T.nilable(Mpp::Events::Dispatcher)).void }
+      def initialize(method:, realm:, secret_key:, defaults: nil, events: nil)
         @method = T.let(method, T.untyped)
         @realm = T.let(realm, String)
         @secret_key = T.let(secret_key, String)
         @defaults = T.let(defaults || {}, T::Hash[String, T.untyped])
+        @events = T.let(events || Mpp::Events.server_dispatcher, Mpp::Events::Dispatcher)
       end
 
       # Create with auto-detected realm and secret_key.
-      sig { params(method: T.untyped, realm: T.untyped, secret_key: T.untyped).returns(T.attached_class) }
-      def self.create(method:, realm: nil, secret_key: nil)
+      sig { params(method: T.untyped, realm: T.untyped, secret_key: T.untyped, events: T.nilable(Mpp::Events::Dispatcher)).returns(T.attached_class) }
+      def self.create(method:, realm: nil, secret_key: nil, events: nil)
         new(
           method: method,
           realm: realm || Defaults.detect_realm,
-          secret_key: secret_key || Defaults.detect_secret_key
+          secret_key: secret_key || Defaults.detect_secret_key,
+          events: events
         )
+      end
+
+      sig { params(name: String, handler: T.nilable(T.untyped), block: T.nilable(T.proc.params(payload: T.untyped).returns(T.untyped))).returns(T.proc.void) }
+      def on(name, handler = nil, &block)
+        @events.on(name, handler, &block)
+      end
+
+      sig { params(handler: T.nilable(T.untyped), block: T.nilable(T.proc.params(payload: T.untyped).returns(T.untyped))).returns(T.proc.void) }
+      def on_challenge_created(handler = nil, &block)
+        on(Mpp::Events::CHALLENGE_CREATED, handler, &block)
+      end
+
+      sig { params(handler: T.nilable(T.untyped), block: T.nilable(T.proc.params(payload: T.untyped).returns(T.untyped))).returns(T.proc.void) }
+      def on_payment_failed(handler = nil, &block)
+        on(Mpp::Events::PAYMENT_FAILED, handler, &block)
+      end
+
+      sig { params(handler: T.nilable(T.untyped), block: T.nilable(T.proc.params(payload: T.untyped).returns(T.untyped))).returns(T.proc.void) }
+      def on_payment_success(handler = nil, &block)
+        on(Mpp::Events::PAYMENT_SUCCESS, handler, &block)
       end
 
       # Handle a charge intent.
@@ -89,7 +111,8 @@ module Mpp
           secret_key: @secret_key,
           method: @method.name,
           description: description,
-          expires: expires
+          expires: expires,
+          events: @events
         )
       end
     end

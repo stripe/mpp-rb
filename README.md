@@ -68,6 +68,35 @@ transport = Mpp::Client::Transport.new(
 response = transport.request(:get, "https://mpp.dev/api/ping/paid")
 ```
 
+### Event hooks
+
+Register hooks to observe the automatic payment lifecycle. Each registration returns an unsubscribe proc.
+
+```ruby
+server.on_challenge_created do |payload|
+  puts "challenge: #{payload[:challenge].id}"
+end
+
+server.on_payment_success do |payload|
+  puts "paid: #{payload[:receipt].reference}"
+end
+
+transport.on_challenge_received do |payload|
+  puts "received: #{payload[:challenge].id}"
+  nil
+end
+
+transport.on_payment_response do |payload|
+  puts "retry status: #{payload[:response].code}"
+end
+
+transport.on("*") do |event|
+  puts "payment event: #{event.name}"
+end
+```
+
+Client events are `challenge.received`, `credential.created`, `payment.response`, and `payment.failed`. Server events are `challenge.created`, `payment.success`, and `payment.failed`.
+
 ### Rack Middleware
 
 ```ruby

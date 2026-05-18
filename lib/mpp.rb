@@ -19,6 +19,7 @@ module Mpp
   autoload :Json, "mpp/json"
   autoload :BodyDigest, "mpp/body_digest"
   autoload :Expires, "mpp/expires"
+  autoload :Events, "mpp/events"
   autoload :Units, "mpp/units"
   autoload :MemoryStore, "mpp/store"
 
@@ -39,9 +40,9 @@ module Mpp
     autoload :MCP, "mpp/extensions/mcp"
   end
 
-  sig { params(method: T.untyped, realm: T.untyped, secret_key: T.untyped).returns(T.untyped) }
-  def self.create(method:, realm: nil, secret_key: nil)
-    Server::MppHandler.create(method: method, realm: realm, secret_key: secret_key)
+  sig { params(method: T.untyped, realm: T.untyped, secret_key: T.untyped, events: T.nilable(Mpp::Events::Dispatcher)).returns(T.untyped) }
+  def self.create(method:, realm: nil, secret_key: nil, events: nil)
+    Server::MppHandler.create(method: method, realm: realm, secret_key: secret_key, events: events)
   end
 
   # Error hierarchy
