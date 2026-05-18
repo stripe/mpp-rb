@@ -81,6 +81,7 @@ module Mpp
         begin
           event_credential = nil
           if @events.has_handlers?(Mpp::Events::CHALLENGE_RECEIVED)
+            # challenge.received can override credential creation; first non-empty credential wins.
             event_credential = @events.emit_first(Mpp::Events::CHALLENGE_RECEIVED, {
               challenge: challenge,
               challenges: [challenge],
@@ -139,6 +140,16 @@ module Mpp
           @events.emit(Mpp::Events::PAYMENT_RESPONSE, {
             challenge: challenge,
             credential: auth_header,
+            input: url,
+            method: matched_method,
+            response: payment_response
+          })
+        elsif @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+          @events.emit(Mpp::Events::PAYMENT_FAILED, {
+            challenge: challenge,
+            challenges: [challenge],
+            credential: auth_header,
+            error: Mpp::VerificationFailedError.new(reason: "retry returned HTTP #{payment_response.code}"),
             input: url,
             method: matched_method,
             response: payment_response

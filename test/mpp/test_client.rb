@@ -292,6 +292,31 @@ class TestClientTransport < Minitest::Test
     assert_equal "Payment verification failed: client signing failed.", error.message
     assert_equal [[challenge.id, "Payment verification failed: client signing failed."]], seen
   end
+
+  def test_emits_payment_failed_for_non_success_retry
+    challenge = Mpp::Challenge.create(
+      secret_key: "test-secret",
+      realm: "api.example.com",
+      method: "tempo",
+      intent: "charge",
+      request: {"amount" => "1000000"},
+      expires: Mpp::Expires.minutes(5)
+    )
+    seen = []
+    @transport.on_payment_failed do |payload|
+      seen << [payload[:challenge].id, payload[:response].code, payload[:error].message]
+    end
+
+    stub_request(:get, "https://api.example.com/resource")
+      .to_return(status: 402, headers: {"WWW-Authenticate" => challenge.to_www_authenticate("api.example.com")})
+      .then
+      .to_return(status: 403, body: "forbidden")
+
+    response = @transport.get("https://api.example.com/resource")
+
+    assert_equal "403", response.code
+    assert_equal [[challenge.id, "403", "Payment verification failed: retry returned HTTP 403."]], seen
+  end
 end
 
 class TestClientConvenience < Minitest::Test
