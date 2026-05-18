@@ -18,9 +18,35 @@ module Mpp
     class Transport
       extend T::Sig
 
-      sig { params(methods: T::Array[T.untyped]).void }
-      def initialize(methods:)
+      sig { params(methods: T::Array[T.untyped], events: T.nilable(Mpp::Events::Dispatcher)).void }
+      def initialize(methods:, events: nil)
         @methods = T.let(methods.to_h { |m| [m.name, m] }, T::Hash[String, T.untyped])
+        @events = T.let(events || Mpp::Events.client_dispatcher, Mpp::Events::Dispatcher)
+      end
+
+      sig { params(name: String, handler: T.nilable(T.untyped), block: T.nilable(T.proc.params(payload: T.untyped).returns(T.untyped))).returns(T.proc.void) }
+      def on(name, handler = nil, &block)
+        @events.on(name, handler, &block)
+      end
+
+      sig { params(handler: T.nilable(T.untyped), block: T.nilable(T.proc.params(payload: T.untyped).returns(T.untyped))).returns(T.proc.void) }
+      def on_challenge_received(handler = nil, &block)
+        on(Mpp::Events::CHALLENGE_RECEIVED, handler, &block)
+      end
+
+      sig { params(handler: T.nilable(T.untyped), block: T.nilable(T.proc.params(payload: T.untyped).returns(T.untyped))).returns(T.proc.void) }
+      def on_credential_created(handler = nil, &block)
+        on(Mpp::Events::CREDENTIAL_CREATED, handler, &block)
+      end
+
+      sig { params(handler: T.nilable(T.untyped), block: T.nilable(T.proc.params(payload: T.untyped).returns(T.untyped))).returns(T.proc.void) }
+      def on_payment_failed(handler = nil, &block)
+        on(Mpp::Events::PAYMENT_FAILED, handler, &block)
+      end
+
+      sig { params(handler: T.nilable(T.untyped), block: T.nilable(T.proc.params(payload: T.untyped).returns(T.untyped))).returns(T.proc.void) }
+      def on_payment_response(handler = nil, &block)
+        on(Mpp::Events::PAYMENT_RESPONSE, handler, &block)
       end
 
       # Send an HTTP request with automatic 402 payment handling.
@@ -34,7 +60,7 @@ module Mpp
 
         # Parse WWW-Authenticate headers
         www_auth_headers = response.get_fields("www-authenticate") || []
-        challenge, matched_method = find_matching_challenge(www_auth_headers)
+        challenge, matched_method = find_matching_challenge(www_auth_headers, input: url, response: response)
         return response unless challenge && matched_method
 
         # Check expiry before paying (client-side guardrail)
@@ -47,11 +73,79 @@ module Mpp
           end
         end
 
-        credential = matched_method.create_credential(challenge)
-        auth_header = credential.to_authorization
+        auth_header = nil
+        create_credential = Kernel.lambda do
+          auth_header ||= credential_authorization(matched_method.create_credential(challenge))
+        end
+
+        begin
+          event_credential = nil
+          if @events.has_handlers?(Mpp::Events::CHALLENGE_RECEIVED)
+            event_credential = @events.emit_first(Mpp::Events::CHALLENGE_RECEIVED, {
+              challenge: challenge,
+              challenges: [challenge],
+              create_credential: create_credential,
+              input: url,
+              method: matched_method,
+              response: response
+            })
+          end
+          auth_header = credential_authorization(event_credential) unless event_credential.nil?
+          auth_header ||= create_credential.call
+
+          if @events.has_handlers?(Mpp::Events::CREDENTIAL_CREATED)
+            @events.emit(Mpp::Events::CREDENTIAL_CREATED, {
+              challenge: challenge,
+              credential: auth_header,
+              input: url,
+              method: matched_method,
+              response: response
+            })
+          end
+        rescue => e
+          if @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+            @events.emit(Mpp::Events::PAYMENT_FAILED, {
+              challenge: challenge,
+              challenges: [challenge],
+              error: e,
+              input: url,
+              method: matched_method,
+              response: response
+            })
+          end
+          raise
+        end
 
         retry_headers = headers.merge("Authorization" => auth_header)
-        send_request(uri, method, retry_headers, body)
+        payment_response = nil
+        begin
+          payment_response = send_request(uri, method, retry_headers, body)
+        rescue => e
+          if @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+            @events.emit(Mpp::Events::PAYMENT_FAILED, {
+              challenge: challenge,
+              challenges: [challenge],
+              credential: auth_header,
+              error: e,
+              input: url,
+              method: matched_method,
+              response: response
+            })
+          end
+          raise
+        end
+
+        if payment_response.code.to_i.between?(200, 299) && @events.has_handlers?(Mpp::Events::PAYMENT_RESPONSE)
+          @events.emit(Mpp::Events::PAYMENT_RESPONSE, {
+            challenge: challenge,
+            credential: auth_header,
+            input: url,
+            method: matched_method,
+            response: payment_response
+          })
+        end
+
+        payment_response
       end
 
       sig { params(url: T.any(URI::Generic, String), kwargs: T.untyped).returns(T.untyped) }
@@ -97,19 +191,49 @@ module Mpp
         http.request(req)
       end
 
-      sig { params(www_auth_headers: T.untyped).returns(T::Array[T.untyped]) }
-      def find_matching_challenge(www_auth_headers)
+      sig { params(www_auth_headers: T.untyped, input: T.untyped, response: T.untyped).returns(T::Array[T.untyped]) }
+      def find_matching_challenge(www_auth_headers, input: nil, response: nil)
         www_auth_headers.each do |header|
           next unless header.downcase.start_with?("payment ")
 
           begin
             parsed = Mpp::Challenge.from_www_authenticate(header)
             return [parsed, @methods[parsed.method]] if @methods.key?(parsed.method)
-          rescue Mpp::ParseError
+          rescue Mpp::ParseError => e
+            if @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+              @events.emit(Mpp::Events::PAYMENT_FAILED, {
+                error: e,
+                input: input,
+                response: response
+              })
+            end
             next
           end
         end
         [nil, nil]
+      end
+
+      sig { params(credential: T.untyped).returns(String) }
+      def credential_authorization(credential)
+        auth_header = if credential.respond_to?(:to_authorization)
+          credential.to_authorization
+        elsif credential.is_a?(String)
+          credential
+        else
+          raise ArgumentError, "Credential must be a String or respond to #to_authorization"
+        end
+
+        validate_authorization_header(auth_header)
+        auth_header
+      end
+
+      sig { params(auth_header: String).void }
+      def validate_authorization_header(auth_header)
+        unless auth_header.start_with?("Payment ") && auth_header.length > 8
+          raise ArgumentError, "Credential must be a non-empty Payment authorization header"
+        end
+
+        raise ArgumentError, "Credential contains invalid header characters" if auth_header.match?(/[[:cntrl:]]/)
       end
     end
 
@@ -118,20 +242,20 @@ module Mpp
 
     module_function
 
-    sig { params(method: T.untyped, url: T.untyped, methods: T::Array[T.untyped], kwargs: T.untyped).returns(T.untyped) }
-    def request(method, url, methods:, **kwargs)
-      transport = Transport.new(methods: methods)
+    sig { params(method: T.untyped, url: T.untyped, methods: T::Array[T.untyped], events: T.nilable(Mpp::Events::Dispatcher), kwargs: T.untyped).returns(T.untyped) }
+    def request(method, url, methods:, events: nil, **kwargs)
+      transport = Transport.new(methods: methods, events: events)
       transport.request(method, url, **kwargs)
     end
 
-    sig { params(url: T.untyped, methods: T::Array[T.untyped], kwargs: T.untyped).returns(T.untyped) }
-    def get(url, methods:, **kwargs)
-      request("GET", url, **T.unsafe({methods: methods, **kwargs}))
+    sig { params(url: T.untyped, methods: T::Array[T.untyped], events: T.nilable(Mpp::Events::Dispatcher), kwargs: T.untyped).returns(T.untyped) }
+    def get(url, methods:, events: nil, **kwargs)
+      request("GET", url, **T.unsafe({methods: methods, events: events, **kwargs}))
     end
 
-    sig { params(url: T.untyped, methods: T::Array[T.untyped], kwargs: T.untyped).returns(T.untyped) }
-    def post(url, methods:, **kwargs)
-      request("POST", url, **T.unsafe({methods: methods, **kwargs}))
+    sig { params(url: T.untyped, methods: T::Array[T.untyped], events: T.nilable(Mpp::Events::Dispatcher), kwargs: T.untyped).returns(T.untyped) }
+    def post(url, methods:, events: nil, **kwargs)
+      request("POST", url, **T.unsafe({methods: methods, events: events, **kwargs}))
     end
   end
 end

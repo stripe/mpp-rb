@@ -15,14 +15,40 @@ module Mpp
       # Verify a payment credential or generate a new challenge.
       #
       # Returns Challenge (payment required) or [Credential, Receipt] (verified).
-      sig { params(authorization: T.nilable(String), intent: T.untyped, request: T::Hash[String, T.untyped], realm: String, secret_key: String, method: T.nilable(String), description: T.nilable(String), meta: T.nilable(T::Hash[String, T.untyped]), expires: T.nilable(String)).returns(T.untyped) }
+      sig { params(authorization: T.nilable(String), intent: T.untyped, request: T::Hash[String, T.untyped], realm: String, secret_key: String, method: T.nilable(String), description: T.nilable(String), meta: T.nilable(T::Hash[String, T.untyped]), expires: T.nilable(String), events: T.nilable(Mpp::Events::Dispatcher)).returns(T.untyped) }
       def verify_or_challenge(authorization:, intent:, request:, realm:, secret_key:,
-        method: nil, description: nil, meta: nil, expires: nil)
+        method: nil, description: nil, meta: nil, expires: nil, events: nil)
         method_name = method || "tempo"
         request = Mpp::Units.transform_units(request)
+        dispatcher = events
+        events_enabled = dispatcher&.has_handlers?
+        method_context = events_enabled ? {name: method_name, intent: intent.name} : nil
 
-        new_challenge = Kernel.lambda {
-          create_challenge(method_name, intent.name, request, realm, secret_key, description, meta, expires)
+        new_challenge = Kernel.lambda { |credential = nil, error = nil, submitted_challenge = nil|
+          challenge = create_challenge(method_name, intent.name, request, realm, secret_key, description, meta, expires)
+          if error && dispatcher&.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+            emit_payment_failed(
+              dispatcher: dispatcher,
+              challenge: challenge,
+              credential: credential,
+              error: error,
+              method: T.must(method_context),
+              request: request,
+              retry_challenge: challenge,
+              submitted_challenge: submitted_challenge
+            )
+          end
+          if dispatcher&.has_handlers?(Mpp::Events::CHALLENGE_CREATED)
+            emit_challenge_created(
+              dispatcher: dispatcher,
+              challenge: challenge,
+              credential: credential,
+              error: error,
+              method: T.must(method_context),
+              request: request
+            )
+          end
+          challenge
         }
 
         return new_challenge.call if authorization.nil?
@@ -32,8 +58,8 @@ module Mpp
 
         begin
           credential = Mpp::Credential.from_authorization(payment_scheme)
-        rescue Mpp::ParseError
-          return new_challenge.call
+        rescue Mpp::ParseError => e
+          return new_challenge.call(nil, Mpp::MalformedCredentialError.new(reason: e.message))
         end
 
         # Stateless challenge verification
@@ -41,8 +67,8 @@ module Mpp
         begin
           echo_request = echo.request.empty? ? {} : Mpp::Parsing.b64_decode(echo.request)
           echo_opaque = (echo.opaque && !T.must(echo.opaque).empty?) ? Mpp::Parsing.b64_decode(echo.opaque) : nil
-        rescue Mpp::ParseError
-          return new_challenge.call
+        rescue Mpp::ParseError => e
+          return new_challenge.call(credential, Mpp::MalformedCredentialError.new(reason: e.message), echo)
         end
 
         expected_id = Mpp.generate_challenge_id(
@@ -55,42 +81,99 @@ module Mpp
           digest: echo.digest,
           opaque: echo_opaque
         )
-        return new_challenge.call unless Mpp.secure_compare(echo.id, expected_id)
+        unless Mpp.secure_compare(echo.id, expected_id)
+          return new_challenge.call(
+            credential,
+            Mpp::InvalidChallengeError.new(challenge_id: echo.id, reason: "challenge id mismatch"),
+            echo
+          )
+        end
 
         # Assert echoed fields match server's values
-        return new_challenge.call unless echo.realm == realm && echo.method == method_name && echo.intent == intent.name
+        unless echo.realm == realm && echo.method == method_name && echo.intent == intent.name
+          return new_challenge.call(
+            credential,
+            Mpp::InvalidChallengeError.new(challenge_id: echo.id, reason: "challenge binding mismatch"),
+            echo
+          )
+        end
 
         # Assert echoed request matches server's current request
-        return new_challenge.call unless echo_request == request
+        unless echo_request == request
+          return new_challenge.call(
+            credential,
+            Mpp::InvalidChallengeError.new(challenge_id: echo.id, reason: "request mismatch"),
+            echo
+          )
+        end
 
-        return new_challenge.call unless echo_opaque == meta
-
-        # Reject expired challenges as defense-in-depth
-        if echo.expires
-          begin
-            expires_dt = Time.iso8601(T.must(echo.expires).gsub("Z", "+00:00"))
-            return new_challenge.call if expires_dt < Time.now.utc
-          rescue ArgumentError
-            # If we can't parse, continue to stricter check below
-          end
+        unless echo_opaque == meta
+          return new_challenge.call(
+            credential,
+            Mpp::InvalidChallengeError.new(challenge_id: echo.id, reason: "metadata mismatch"),
+            echo
+          )
         end
 
         # Verify echoed request parameters match endpoint's expected request
         request.each do |key, value|
-          return new_challenge.call unless echo_request[key] == value
+          unless echo_request[key] == value
+            return new_challenge.call(
+              credential,
+              Mpp::InvalidChallengeError.new(challenge_id: echo.id, reason: "request field #{key} mismatch"),
+              echo
+            )
+          end
         end
 
         # Enforce challenge expiry - fail closed
-        return new_challenge.call unless echo.expires
+        unless echo.expires
+          return new_challenge.call(
+            credential,
+            Mpp::InvalidChallengeError.new(challenge_id: echo.id, reason: "missing expiry"),
+            echo
+          )
+        end
 
         begin
           expires_dt = Time.iso8601(T.must(echo.expires).gsub("Z", "+00:00"))
         rescue ArgumentError
-          return new_challenge.call
+          return new_challenge.call(
+            credential,
+            Mpp::InvalidChallengeError.new(challenge_id: echo.id, reason: "invalid expiry"),
+            echo
+          )
         end
-        return new_challenge.call if expires_dt < Time.now.utc
+        if expires_dt < Time.now.utc
+          return new_challenge.call(credential, Mpp::PaymentExpiredError.new(expires: echo.expires), echo)
+        end
 
-        receipt = intent.verify(credential, request)
+        begin
+          receipt = intent.verify(credential, request)
+        rescue => e
+          if dispatcher&.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+            emit_payment_failed(
+              dispatcher: dispatcher,
+              challenge: echo,
+              credential: credential,
+              error: e,
+              method: T.must(method_context),
+              request: request,
+              submitted_challenge: echo
+            )
+          end
+          raise
+        end
+        if dispatcher&.has_handlers?(Mpp::Events::PAYMENT_SUCCESS)
+          emit_payment_success(
+            dispatcher: dispatcher,
+            challenge: echo,
+            credential: credential,
+            method: T.must(method_context),
+            receipt: receipt,
+            request: request
+          )
+        end
         [credential, receipt]
       end
 
@@ -123,6 +206,49 @@ module Mpp
           return scheme if scheme.downcase.start_with?("payment ")
         end
         nil
+      end
+
+      sig { params(dispatcher: T.nilable(Mpp::Events::Dispatcher), challenge: T.untyped, credential: T.untyped, error: T.untyped, method: T::Hash[Symbol, T.untyped], request: T::Hash[String, T.untyped]).void }
+      def emit_challenge_created(dispatcher:, challenge:, credential:, error:, method:, request:)
+        return unless dispatcher&.has_handlers?(Mpp::Events::CHALLENGE_CREATED)
+
+        payload = {
+          challenge: challenge,
+          method: method,
+          request: request
+        }
+        payload[:credential] = credential unless credential.nil?
+        payload[:error] = error unless error.nil?
+        dispatcher.emit(Mpp::Events::CHALLENGE_CREATED, payload)
+      end
+
+      sig { params(dispatcher: Mpp::Events::Dispatcher, challenge: T.untyped, credential: T.untyped, error: T.untyped, method: T::Hash[Symbol, T.untyped], request: T::Hash[String, T.untyped], retry_challenge: T.untyped, submitted_challenge: T.untyped).void }
+      def emit_payment_failed(dispatcher:, challenge:, credential:, error:, method:, request:, retry_challenge: nil, submitted_challenge: nil)
+        return unless dispatcher.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+
+        payload = {
+          challenge: challenge,
+          credential: credential,
+          error: error,
+          method: method,
+          request: request
+        }
+        payload[:retry_challenge] = retry_challenge unless retry_challenge.nil?
+        payload[:submitted_challenge] = submitted_challenge unless submitted_challenge.nil?
+        dispatcher.emit(Mpp::Events::PAYMENT_FAILED, payload)
+      end
+
+      sig { params(dispatcher: Mpp::Events::Dispatcher, challenge: T.untyped, credential: T.untyped, method: T::Hash[Symbol, T.untyped], receipt: T.untyped, request: T::Hash[String, T.untyped]).void }
+      def emit_payment_success(dispatcher:, challenge:, credential:, method:, receipt:, request:)
+        return unless dispatcher.has_handlers?(Mpp::Events::PAYMENT_SUCCESS)
+
+        dispatcher.emit(Mpp::Events::PAYMENT_SUCCESS, {
+          challenge: challenge,
+          credential: credential,
+          method: method,
+          receipt: receipt,
+          request: request
+        })
       end
     end
   end
