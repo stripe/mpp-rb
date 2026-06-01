@@ -13,6 +13,7 @@ module Mpp
 
     # RFC 9110 auth-param regex: key="value" or key=token
     AUTH_PARAM_RE = /([a-zA-Z_][\w-]*+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,]++))/
+    PAYMENT_METHOD_ID_RE = /\A[a-z]+\z/
 
     module_function
 
@@ -65,6 +66,11 @@ module Mpp
       params
     end
 
+    sig { params(method: T.untyped).void }
+    def validate_payment_method_id(method)
+      Kernel.raise Mpp::ParseError, "Invalid payment method ID" unless method.is_a?(String) && PAYMENT_METHOD_ID_RE.match?(method)
+    end
+
     # Parse a WWW-Authenticate header into a Challenge.
     sig { params(header: T.untyped).returns(Mpp::Challenge) }
     def parse_www_authenticate(header)
@@ -82,6 +88,7 @@ module Mpp
 
       method = params["method"]
       Kernel.raise Mpp::ParseError, "Missing 'method' field" unless method && !method.empty?
+      validate_payment_method_id(method)
 
       intent = params["intent"]
       Kernel.raise Mpp::ParseError, "Missing 'intent' field" unless intent && !intent.empty?
@@ -148,10 +155,13 @@ module Mpp
       Kernel.raise Mpp::ParseError, "Credential challenge must be an object" unless challenge_data.is_a?(Hash)
       Kernel.raise Mpp::ParseError, "Credential challenge missing required field: id" unless challenge_data.key?("id")
 
+      method = (challenge_data["method"] || "").to_s
+      validate_payment_method_id(method)
+
       echo = Mpp::ChallengeEcho.new(
         id: challenge_data["id"].to_s,
         realm: (challenge_data["realm"] || "").to_s,
-        method: (challenge_data["method"] || "").to_s,
+        method: method,
         intent: (challenge_data["intent"] || "").to_s,
         request: (challenge_data["request"] || "").to_s,
         expires: challenge_data["expires"]&.to_s,
@@ -213,6 +223,8 @@ module Mpp
       Kernel.raise Mpp::ParseError, "Invalid receipt status" unless status == "success"
 
       timestamp = parse_timestamp(data["timestamp"].to_s)
+      method = data["method"].to_s
+      validate_payment_method_id(method)
 
       extra = data["extra"]
       extra = nil unless extra.is_a?(Hash)
@@ -221,7 +233,7 @@ module Mpp
         status: status,
         timestamp: timestamp,
         reference: data["reference"].to_s,
-        method: (data["method"] || "").to_s,
+        method: method,
         external_id: data["externalId"]&.to_s,
         extra: extra
       )

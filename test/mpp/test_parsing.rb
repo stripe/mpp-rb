@@ -67,6 +67,16 @@ class TestParsing < Minitest::Test
     assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate('Payment id="abc"') }
   end
 
+  def test_parse_www_authenticate_rejects_invalid_method_ids
+    request_b64 = Mpp::Parsing.b64_encode({"amount" => "1000000"})
+
+    invalid_payment_method_ids.each do |payment_method|
+      header = %(Payment id="abc", realm="api.example.com", method="#{payment_method}", intent="charge", request="#{request_b64}")
+
+      assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate(header) }
+    end
+  end
+
   def test_credential_roundtrip
     echo = Mpp::ChallengeEcho.new(
       id: "test-id",
@@ -115,6 +125,24 @@ class TestParsing < Minitest::Test
     assert_raises(Mpp::ParseError) { Mpp::Credential.from_authorization("Bearer token123") }
   end
 
+  def test_parse_authorization_rejects_invalid_challenge_method_ids
+    invalid_payment_method_ids.each do |payment_method|
+      payload = {
+        "challenge" => {
+          "id" => "test-id",
+          "realm" => "api.example.com",
+          "method" => payment_method,
+          "intent" => "charge",
+          "request" => "e30"
+        },
+        "payload" => {"type" => "hash", "hash" => "0xabc"}
+      }
+      header = "Payment #{Mpp::Parsing.b64_encode(payload)}"
+
+      assert_raises(Mpp::ParseError) { Mpp::Credential.from_authorization(header) }
+    end
+  end
+
   def test_receipt_roundtrip
     receipt = Mpp::Receipt.new(
       status: "success",
@@ -154,6 +182,20 @@ class TestParsing < Minitest::Test
     assert_equal "0xdeadbeef", receipt.reference
     assert_equal "tempo", receipt.method
     assert_instance_of Time, receipt.timestamp
+  end
+
+  def test_parse_payment_receipt_rejects_invalid_method_ids
+    invalid_payment_method_ids.each do |payment_method|
+      payload = {
+        "status" => "success",
+        "timestamp" => "2026-01-15T12:00:30Z",
+        "reference" => "0xabc123",
+        "method" => payment_method
+      }
+      header = Mpp::Parsing.b64_encode(payload)
+
+      assert_raises(Mpp::ParseError) { Mpp::Receipt.from_payment_receipt(header) }
+    end
   end
 
   def test_challenge_to_echo
@@ -244,5 +286,11 @@ class TestParsing < Minitest::Test
   def test_from_www_authenticate_list_empty
     assert_equal [], Mpp::Challenge.from_www_authenticate_list("Bearer token123")
     assert_equal [], Mpp::Challenge.from_www_authenticate_list("")
+  end
+
+  private
+
+  def invalid_payment_method_ids
+    ["Tempo", "tempo2", "tempo-pay", "tempo_pay", "tempo.pay"]
   end
 end
