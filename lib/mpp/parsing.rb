@@ -10,6 +10,7 @@ module Mpp
     extend T::Sig
 
     MAX_HEADER_PAYLOAD_SIZE = T.let(16 * 1024, Integer)
+    METHOD_ID_RE = T.let(/\A[a-z]++\z/, Regexp)
 
     # RFC 9110 auth-param regex: key="value" or key=token
     AUTH_PARAM_RE = /([a-zA-Z_][\w-]*+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,]++))/
@@ -65,6 +66,11 @@ module Mpp
       params
     end
 
+    sig { params(method: T.untyped).void }
+    def validate_method_id(method)
+      Kernel.raise Mpp::ParseError, "Invalid method field" unless method.is_a?(String) && METHOD_ID_RE.match?(method)
+    end
+
     # Parse a WWW-Authenticate header into a Challenge.
     sig { params(header: T.untyped).returns(Mpp::Challenge) }
     def parse_www_authenticate(header)
@@ -82,6 +88,7 @@ module Mpp
 
       method = params["method"]
       Kernel.raise Mpp::ParseError, "Missing 'method' field" unless method && !method.empty?
+      validate_method_id(method)
 
       intent = params["intent"]
       Kernel.raise Mpp::ParseError, "Missing 'intent' field" unless intent && !intent.empty?
@@ -147,6 +154,7 @@ module Mpp
       challenge_data = data["challenge"]
       Kernel.raise Mpp::ParseError, "Credential challenge must be an object" unless challenge_data.is_a?(Hash)
       Kernel.raise Mpp::ParseError, "Credential challenge missing required field: id" unless challenge_data.key?("id")
+      validate_method_id((challenge_data["method"] || "").to_s)
 
       echo = Mpp::ChallengeEcho.new(
         id: challenge_data["id"].to_s,
@@ -211,6 +219,8 @@ module Mpp
 
       status = data["status"]
       Kernel.raise Mpp::ParseError, "Invalid receipt status" unless status == "success"
+
+      validate_method_id((data["method"] || "").to_s)
 
       timestamp = parse_timestamp(data["timestamp"].to_s)
 

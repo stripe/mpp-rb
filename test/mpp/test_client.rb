@@ -115,7 +115,7 @@ class TestClientTransport < Minitest::Test
     challenge = Mpp::Challenge.create(
       secret_key: "test-secret",
       realm: "api.example.com",
-      method: "unknown_method",
+      method: "unknown",
       intent: "charge",
       request: {"amount" => "1000000"},
       expires: Mpp::Expires.minutes(5)
