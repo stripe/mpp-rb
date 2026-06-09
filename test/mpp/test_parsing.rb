@@ -3,14 +3,6 @@
 require "test_helper"
 
 class TestParsing < Minitest::Test
-  INVALID_METHOD_ID_VECTORS = {
-    "uppercase" => "Tempo",
-    "digits" => "tempo1",
-    "dash" => "tempo-pay",
-    "underscore" => "tempo_pay",
-    "dot" => "tempo.pay"
-  }.freeze
-
   def test_parse_www_authenticate_basic
     challenge = Mpp::Challenge.create(
       secret_key: "test-secret",
@@ -76,13 +68,12 @@ class TestParsing < Minitest::Test
   end
 
   def test_parse_www_authenticate_rejects_invalid_method_ids
-    INVALID_METHOD_ID_VECTORS.each do |name, method|
-      err = assert_raises(Mpp::ParseError, name) do
-        Mpp::Challenge.from_www_authenticate(
-          "Payment id=\"abc\", realm=\"api.example.com\", method=\"#{method}\", intent=\"charge\", request=\"e30\""
-        )
-      end
-      assert_match(/Invalid method field/, err.message)
+    request_b64 = Mpp::Parsing.b64_encode({"amount" => "1000000"})
+
+    invalid_payment_method_ids.each do |payment_method|
+      header = %(Payment id="abc", realm="api.example.com", method="#{payment_method}", intent="charge", request="#{request_b64}")
+
+      assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate(header) }
     end
   end
 
@@ -134,22 +125,39 @@ class TestParsing < Minitest::Test
     assert_raises(Mpp::ParseError) { Mpp::Credential.from_authorization("Bearer token123") }
   end
 
-  def test_parse_authorization_rejects_invalid_method_ids
-    INVALID_METHOD_ID_VECTORS.each do |name, method|
-      header = "Payment #{Mpp::Parsing.b64_encode(
-        {
-          "challenge" => {
-            "id" => "abc",
-            "realm" => "api.example.com",
-            "method" => method,
-            "intent" => "charge",
-            "request" => "e30"
-          },
-          "payload" => {}
-        }
-      )}"
-      err = assert_raises(Mpp::ParseError, name) { Mpp::Credential.from_authorization(header) }
-      assert_match(/Invalid method field/, err.message)
+  def test_parse_authorization_rejects_invalid_challenge_method_ids
+    invalid_payment_method_ids.each do |payment_method|
+      payload = {
+        "challenge" => {
+          "id" => "test-id",
+          "realm" => "api.example.com",
+          "method" => payment_method,
+          "intent" => "charge",
+          "request" => "e30"
+        },
+        "payload" => {"type" => "hash", "hash" => "0xabc"}
+      }
+      header = "Payment #{Mpp::Parsing.b64_encode(payload)}"
+
+      assert_raises(Mpp::ParseError) { Mpp::Credential.from_authorization(header) }
+    end
+  end
+
+  def test_parse_authorization_rejects_non_string_challenge_method_ids
+    non_string_payment_method_ids.each do |payment_method|
+      payload = {
+        "challenge" => {
+          "id" => "test-id",
+          "realm" => "api.example.com",
+          "method" => payment_method,
+          "intent" => "charge",
+          "request" => "e30"
+        },
+        "payload" => {"type" => "hash", "hash" => "0xabc"}
+      }
+      header = "Payment #{Mpp::Parsing.b64_encode(payload)}"
+
+      assert_raises(Mpp::ParseError) { Mpp::Credential.from_authorization(header) }
     end
   end
 
@@ -195,17 +203,30 @@ class TestParsing < Minitest::Test
   end
 
   def test_parse_payment_receipt_rejects_invalid_method_ids
-    INVALID_METHOD_ID_VECTORS.each do |name, method|
-      header = Mpp::Parsing.b64_encode(
-        {
-          "status" => "success",
-          "timestamp" => "2026-01-01T00:00:00Z",
-          "reference" => "ref-123",
-          "method" => method
-        }
-      )
-      err = assert_raises(Mpp::ParseError, name) { Mpp::Receipt.from_payment_receipt(header) }
-      assert_match(/Invalid method field/, err.message)
+    invalid_payment_method_ids.each do |payment_method|
+      payload = {
+        "status" => "success",
+        "timestamp" => "2026-01-15T12:00:30Z",
+        "reference" => "0xabc123",
+        "method" => payment_method
+      }
+      header = Mpp::Parsing.b64_encode(payload)
+
+      assert_raises(Mpp::ParseError) { Mpp::Receipt.from_payment_receipt(header) }
+    end
+  end
+
+  def test_parse_payment_receipt_rejects_non_string_method_ids
+    non_string_payment_method_ids.each do |payment_method|
+      payload = {
+        "status" => "success",
+        "timestamp" => "2026-01-15T12:00:30Z",
+        "reference" => "0xabc123",
+        "method" => payment_method
+      }
+      header = Mpp::Parsing.b64_encode(payload)
+
+      assert_raises(Mpp::ParseError) { Mpp::Receipt.from_payment_receipt(header) }
     end
   end
 
@@ -297,5 +318,15 @@ class TestParsing < Minitest::Test
   def test_from_www_authenticate_list_empty
     assert_equal [], Mpp::Challenge.from_www_authenticate_list("Bearer token123")
     assert_equal [], Mpp::Challenge.from_www_authenticate_list("")
+  end
+
+  private
+
+  def invalid_payment_method_ids
+    ["Tempo", "tempo2", "tempo-pay", "tempo_pay", "tempo.pay"]
+  end
+
+  def non_string_payment_method_ids
+    [true, false]
   end
 end

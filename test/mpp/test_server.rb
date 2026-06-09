@@ -108,6 +108,38 @@ class TestServerVerify < Minitest::Test
     assert_equal "success", receipt.status
   end
 
+  def test_verification_emits_payment_success
+    request = {"amount" => "1000000"}
+    challenge = Mpp::Challenge.create(
+      secret_key: SECRET,
+      realm: REALM,
+      method: "tempo",
+      intent: "charge",
+      request: request,
+      expires: Mpp::Expires.minutes(5)
+    )
+    credential = Mpp::Credential.new(
+      challenge: challenge.to_echo,
+      payload: {"type" => "transaction", "signature" => "0xabc"}
+    )
+    events = Mpp::Events.server_dispatcher
+    seen = []
+    events.on(Mpp::Events::PAYMENT_SUCCESS) do |payload|
+      seen << [payload[:challenge].id, payload[:receipt].status, payload[:method]]
+    end
+
+    Mpp::Server::Verify.verify_or_challenge(
+      authorization: credential.to_authorization,
+      intent: @intent,
+      request: request,
+      realm: REALM,
+      secret_key: SECRET,
+      events: events
+    )
+
+    assert_equal [[challenge.id, "success", {name: "tempo", intent: "charge"}]], seen
+  end
+
   def test_rejects_wrong_secret
     request = {"amount" => "1000000"}
     challenge = Mpp::Challenge.create(
@@ -131,6 +163,44 @@ class TestServerVerify < Minitest::Test
     )
 
     assert_instance_of Mpp::Challenge, result
+  end
+
+  def test_verification_failure_emits_payment_failed_and_challenge_created
+    request = {"amount" => "1000000"}
+    challenge = Mpp::Challenge.create(
+      secret_key: "different-secret",
+      realm: REALM,
+      method: "tempo",
+      intent: "charge",
+      request: request,
+      expires: Mpp::Expires.minutes(5)
+    )
+    credential = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"type" => "hash", "hash" => "0x123"})
+    events = Mpp::Events.server_dispatcher
+    seen = []
+    events.on(Mpp::Events::PAYMENT_FAILED) do |payload|
+      seen << [Mpp::Events::PAYMENT_FAILED, payload[:submitted_challenge].id, payload[:error].class]
+    end
+    events.on(Mpp::Events::CHALLENGE_CREATED) do |payload|
+      seen << [Mpp::Events::CHALLENGE_CREATED, payload[:challenge].id, payload[:error].class]
+    end
+
+    result = Mpp::Server::Verify.verify_or_challenge(
+      authorization: credential.to_authorization,
+      intent: @intent,
+      request: request,
+      realm: REALM,
+      secret_key: SECRET,
+      events: events
+    )
+
+    assert_instance_of Mpp::Challenge, result
+    assert_equal Mpp::Events::PAYMENT_FAILED, seen[0][0]
+    assert_equal challenge.id, seen[0][1]
+    assert_equal Mpp::InvalidChallengeError, seen[0][2]
+    assert_equal Mpp::Events::CHALLENGE_CREATED, seen[1][0]
+    assert_equal result.id, seen[1][1]
+    assert_equal Mpp::InvalidChallengeError, seen[1][2]
   end
 
   def test_rejects_expired_challenge
@@ -276,6 +346,56 @@ class TestMppHandler < Minitest::Test
     assert_equal 402, response["status"]
     assert response["headers"].key?("WWW-Authenticate")
     assert_equal "application/problem+json", response["headers"]["Content-Type"]
+  end
+
+  def test_handler_exposes_server_lifecycle_hooks
+    intent = MockIntent.new
+    method = MockMethod.new(
+      intents: {"charge" => intent},
+      currency: "0x20c0000000000000000000000000000000000000",
+      recipient: "0x742d35Cc6634c0532925a3b844bC9e7595F8fE00"
+    )
+    handler = Mpp::Server::MppHandler.new(
+      method: method,
+      realm: "api.example.com",
+      secret_key: "test-secret"
+    )
+    seen = []
+    off = handler.on_challenge_created do |payload|
+      seen << [Mpp::Events::CHALLENGE_CREATED, payload[:request]["amount"]]
+    end
+    handler.on(Mpp::Events::ANY) do |event|
+      seen << [Mpp::Events::ANY, event.name]
+    end
+
+    handler.charge(nil, "0.50")
+    off.call
+    handler.charge(nil, "0.50")
+
+    assert_equal [
+      [Mpp::Events::CHALLENGE_CREATED, "500000"],
+      [Mpp::Events::ANY, Mpp::Events::CHALLENGE_CREATED],
+      [Mpp::Events::ANY, Mpp::Events::CHALLENGE_CREATED]
+    ], seen
+  end
+
+  def test_server_hook_errors_do_not_stop_charge
+    intent = MockIntent.new
+    method = MockMethod.new(
+      intents: {"charge" => intent},
+      currency: "0x20c0000000000000000000000000000000000000",
+      recipient: "0x742d35Cc6634c0532925a3b844bC9e7595F8fE00"
+    )
+    handler = Mpp::Server::MppHandler.new(
+      method: method,
+      realm: "api.example.com",
+      secret_key: "test-secret"
+    )
+    handler.on_challenge_created { |_payload| raise "observer failed" }
+
+    result = handler.charge(nil, "0.50")
+
+    assert_instance_of Mpp::Challenge, result
   end
 end
 
