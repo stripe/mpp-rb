@@ -20,7 +20,7 @@ Gem::Specification.new do |spec|
   # All runtime deps are stdlib (openssl, base64, json, bigdecimal, time, uri)
   # Optional deps are autoloaded:
   #   async, async-http  — client + Tempo RPC
-  #   eth                — Tempo account signing
+  #   eth                — Tempo account signing + attribution memos (keccak256)
   #   rlp                — fee payer envelope
 
   spec.metadata["rubygems_mfa_required"] = "true"

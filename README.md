@@ -144,7 +144,7 @@ npx mppx http://localhost:4567/paid
 | Tempo | Yes | Yes |
 | Stripe | Yes | Yes |
 
-Tempo charge transaction construction is implemented directly in Ruby. Optional dependencies: `eth` (account signing) and `rlp` (fee payer envelope).
+Tempo charge transaction construction is implemented directly in Ruby. Optional dependencies: `eth` (account signing and attribution memo verification, so Tempo servers need it too) and `rlp` (fee payer envelope).
 
 ## Protocol
 

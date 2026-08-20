@@ -110,4 +110,33 @@ class TestAttribution < Minitest::Test
     # Random nonces should (almost certainly) differ
     refute_equal d1.nonce, d2.nonce
   end
+
+  # Known-answer vectors pin keccak256 (spec TAG = keccak256("mpp")[0..3]).
+  def test_tag_matches_spec_keccak_vector
+    assert_equal "ef1ed712", Mpp::Methods::Tempo::Attribution.tag.unpack1("H*")
+  end
+
+  def test_fingerprint_matches_keccak_vector
+    fingerprint = Mpp::Methods::Tempo::Attribution.fingerprint("test-server")
+
+    assert_equal "3c224683515d3cb375bf", fingerprint.unpack1("H*")
+  end
+
+  def test_accepts_memo_produced_by_other_sdks
+    memo = "0xef1ed712013c224683515d3cb375bf000000000000000000003b2941df281c7c"
+
+    assert Mpp::Methods::Tempo::Attribution.mpp_memo?(memo)
+    assert Mpp::Methods::Tempo::Attribution.verify_server(memo, "test-server")
+    assert Mpp::Methods::Tempo::Attribution.verify_challenge_binding(memo, "chal-123")
+  end
+
+  def test_raises_without_eth_instead_of_substituting
+    require "minitest/mock"
+    Mpp::Methods::Tempo::Attribution.instance_variable_set(:@tag, nil)
+    Kernel.stub(:require, ->(name) { raise LoadError if name == "eth" }) do
+      assert_raises(Mpp::VerificationError) { Mpp::Methods::Tempo::Attribution.tag }
+    end
+  ensure
+    Mpp::Methods::Tempo::Attribution.instance_variable_set(:@tag, nil)
+  end
 end

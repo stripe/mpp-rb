@@ -13,15 +13,14 @@ module Mpp
 
         module_function
 
-        # Compute keccak256 hash. Uses OpenSSL if available, otherwise pure Ruby.
+        # Compute keccak256 hash. Requires the eth gem; SHA3-256 is not a
+        # substitute (different padding, disjoint digests).
         def keccak256(data)
-          # Try eth gem's keccak first
           Kernel.require "eth"
           Eth::Util.keccak256(data)
         rescue LoadError
-          # Fallback: use OpenSSL's SHA3-256 (not exactly keccak, but close)
-          # For production, the eth gem should be installed
-          OpenSSL::Digest.new("SHA3-256").digest(data)
+          raise Mpp::VerificationError,
+            "eth gem is required to compute MPP attribution memos (keccak256)"
         end
 
         # Compute TAG = keccak256("mpp")[0:4]
