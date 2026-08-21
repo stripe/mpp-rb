@@ -1,6 +1,8 @@
 # typed: false
 # frozen_string_literal: true
 
+require_relative "keccak"
+
 module Mpp
   module Methods
     module Evm
@@ -12,10 +14,7 @@ module Mpp
         module_function
 
         def keccak256(data)
-          Kernel.require "eth"
-          Eth::Util.keccak256(data)
-        rescue Gem::LoadError
-          raise LoadError, "eth gem is not available"
+          Keccak.digest(data)
         end
 
         def challenge_hash(challenge)
@@ -24,16 +23,10 @@ module Mpp
         end
 
         def checksum_address(address)
-          raw = address.to_s
-          hex = raw.delete_prefix("0x")
-          raise ArgumentError, "invalid address: #{address}" unless hex.match?(/\A[a-fA-F0-9]{40}\z/)
+          hex = address.to_s.delete_prefix("0x")
+          Kernel.raise ArgumentError, "invalid address: #{address}" unless hex.match?(/\A[a-fA-F0-9]{40}\z/)
 
-          begin
-            hash = keccak256(hex.downcase).unpack1("H*")
-          rescue LoadError
-            return raw.start_with?("0x") ? raw : "0x#{hex}"
-          end
-
+          hash = Keccak.hexdigest(hex.downcase)
           checksummed = hex.downcase.chars.each_with_index.map { |char, index|
             (char.match?(/[a-f]/) && hash[index].to_i(16) >= 8) ? char.upcase : char
           }.join

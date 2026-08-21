@@ -8,6 +8,7 @@ module Mpp
       autoload :Authorization, "mpp/methods/evm/authorization"
       autoload :ChargeIntent, "mpp/methods/evm/charge_intent"
       autoload :EvmMethod, "mpp/methods/evm/evm_method"
+      autoload :Keccak, "mpp/methods/evm/keccak"
 
       # Factory for a server-side EVM charge method with inline x402 exact support.
       def self.charge(currency:, recipient:, x402:, authorization: nil, chain_id: nil, decimals: nil)
