@@ -19,16 +19,18 @@ module Mpp
       class TempoMethod
         attr_reader :name, :account, :fee_payer, :fee_payer_allowed_fee_tokens,
           :root_account, :rpc_url, :chain_id, :currency, :recipient, :decimals, :client_id,
-          :expected_recipients
+          :expected_recipients, :relay
         attr_accessor :intents
 
         def initialize(account: nil, fee_payer: nil, root_account: nil,
           rpc_url: Defaults::RPC_URL, chain_id: nil, currency: nil,
           recipient: nil, decimals: 6, client_id: nil,
-          expected_recipients: nil, fee_payer_allowed_fee_tokens: nil)
+          expected_recipients: nil, fee_payer_allowed_fee_tokens: nil,
+          relay: nil)
           @name = "tempo"
           @account = account
           @fee_payer = fee_payer
+          @relay = relay
           @fee_payer_allowed_fee_tokens =
             fee_payer_allowed_fee_tokens&.map { |token| token.to_s.downcase }
           @root_account = root_account
@@ -249,7 +251,7 @@ module Mpp
       # Factory function to create a configured TempoMethod.
       def self.tempo(intents:, account: nil, fee_payer: nil, chain_id: nil, rpc_url: nil,
         root_account: nil, currency: nil, recipient: nil, decimals: 6, client_id: nil,
-        expected_recipients: nil, fee_payer_allowed_fee_tokens: nil)
+        expected_recipients: nil, fee_payer_allowed_fee_tokens: nil, relay: nil)
         rpc_url ||= chain_id ? Defaults.rpc_url_for_chain(chain_id) : Defaults::RPC_URL
         currency ||= Defaults.default_currency_for_chain(chain_id)
 
@@ -270,12 +272,15 @@ module Mpp
           decimals: decimals,
           client_id: client_id,
           expected_recipients: expected_recipients,
-          fee_payer_allowed_fee_tokens: fee_payer_allowed_fee_tokens
+          fee_payer_allowed_fee_tokens: fee_payer_allowed_fee_tokens,
+          relay: Relay.resolve_optional(relay)
         )
 
         intents.each_value do |intent|
           intent.rpc_url = rpc_url if intent.respond_to?(:rpc_url=) && intent.rpc_url.nil?
-          intent.instance_variable_set(:@_method, method) if intent.respond_to?(:fee_payer)
+          if intent.respond_to?(:fee_payer) || intent.respond_to?(:relay)
+            intent.instance_variable_set(:@_method, method)
+          end
         end
         method.intents = intents.dup
         method

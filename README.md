@@ -91,7 +91,7 @@ x402: {facilitator: {url: cdp_url, headers: ->(path) { cdp_headers(path) }}}
 x402: {facilitator: cdp_client}
 ```
 
-Tempo charge can sponsor gas through a hosted fee payer using the same `{url:, headers:}` shape as the x402 facilitator:
+Tempo charge can sponsor gas through a hosted fee payer, or skip local RPC entirely by sending credentials to a Tempo API-compatible relay. Both use the same `{url:, headers:}` shape as the facilitator:
 
 ```ruby
 # Hosted fee payer (JSON-RPC eth_signRawTransaction)
@@ -99,6 +99,9 @@ fee_payer: {url: sponsor_url, headers: -> { {"Authorization" => "Bearer #{token}
 
 # Local co-sign
 fee_payer: Mpp::Methods::Tempo::Account.from_key(ENV.fetch("FEE_PAYER_KEY"))
+
+# Tempo API relay (validate + broadcast)
+relay: {url: "https://api.tempo.xyz", headers: -> { {"tempo-api-key" => ENV.fetch("TEMPO_API_KEY")} }}
 ```
 
 ### Client
@@ -177,6 +180,7 @@ env["mpp.charge"] = { amount: "0.50", description: "Paid endpoint" }
 | [compose](./examples/compose/) | Tempo + Base USDC + Stripe SPTs on one endpoint |
 | [evm_x402](./examples/evm_x402/) | EVM charge with x402 exact compatibility |
 | [tempo_feepayer](./examples/tempo_feepayer/) | Tempo charge with a hosted fee-payer `{url:, headers:}` |
+| [tempo_relay](./examples/tempo_relay/) | Tempo charge delegated to an MPP relay `{url:, headers:}` |
 
 Each example is a standalone Sinatra app with `/free` and `/paid` endpoints. To run one:
 

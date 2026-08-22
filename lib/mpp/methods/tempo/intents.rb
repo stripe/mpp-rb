@@ -39,6 +39,10 @@ module Mpp
           @_method&.fee_payer_allowed_fee_tokens
         end
 
+        def relay
+          @_method&.relay
+        end
+
         def verify(credential, request)
           req = Schemas::ChargeRequest.from_hash(request)
 
@@ -48,6 +52,8 @@ module Mpp
             expires = Time.iso8601(challenge_expires.gsub("Z", "+00:00"))
             raise Mpp::VerificationError, "Request has expired" if expires < Time.now.utc
           end
+
+          return relay.verify(credential, request) if relay
 
           payload_data = credential.payload
           unless payload_data.is_a?(Hash) && payload_data.key?("type")
