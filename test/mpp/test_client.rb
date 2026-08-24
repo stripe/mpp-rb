@@ -400,4 +400,69 @@ class TestClientConvenience < Minitest::Test
 
     assert_equal "200", response.code
   end
+
+  # Regression tests for AGR-2026-063: the transport used to send exactly one
+  # credentialed retry and return that response immediately, even if it was
+  # another 402. The canonical client retries up to
+  # Transport::MAX_PAYMENT_RETRIES (3) successive challenges.
+
+  def test_retries_across_multiple_402_challenges
+    first_challenge = Mpp::Challenge.create(
+      secret_key: "test-secret",
+      realm: "api.example.com",
+      method: "tempo",
+      intent: "charge",
+      request: {"amount" => "1000000"},
+      expires: Mpp::Expires.minutes(5)
+    )
+    second_challenge = Mpp::Challenge.create(
+      secret_key: "test-secret",
+      realm: "api.example.com",
+      method: "tempo",
+      intent: "charge",
+      request: {"amount" => "1000000"},
+      expires: Mpp::Expires.minutes(5)
+    )
+
+    # First request: no credential yet, issue the first challenge.
+    # Second request: credential for the first challenge submitted, but the
+    # server rejects it with a *different* fresh challenge instead of a final
+    # failure (e.g. it expired mid-flight).
+    # Third request: credential for the second challenge submitted, accepted.
+    stub_request(:get, "https://api.example.com/resource")
+      .to_return(status: 402, headers: {"WWW-Authenticate" => first_challenge.to_www_authenticate("api.example.com")})
+      .then
+      .to_return(status: 402, headers: {"WWW-Authenticate" => second_challenge.to_www_authenticate("api.example.com")})
+      .then
+      .to_return(status: 200, body: "paid")
+
+    response = @transport.get("https://api.example.com/resource")
+
+    assert_equal "200", response.code
+    assert_equal "paid", response.body
+    assert_requested(:get, "https://api.example.com/resource", times: 3)
+  end
+
+  def test_gives_up_after_max_payment_retries
+    # A server that keeps issuing fresh 402s past the retry budget must not
+    # loop forever — the client gives up and returns the last 402.
+    challenge = Mpp::Challenge.create(
+      secret_key: "test-secret",
+      realm: "api.example.com",
+      method: "tempo",
+      intent: "charge",
+      request: {"amount" => "1000000"},
+      expires: Mpp::Expires.minutes(5)
+    )
+    www_auth = challenge.to_www_authenticate("api.example.com")
+
+    stub_request(:get, "https://api.example.com/resource")
+      .to_return(status: 402, headers: {"WWW-Authenticate" => www_auth})
+
+    response = @transport.get("https://api.example.com/resource")
+
+    assert_equal "402", response.code
+    # 1 initial request + Transport::MAX_PAYMENT_RETRIES (3) retries = 4 total.
+    assert_requested(:get, "https://api.example.com/resource", times: 1 + Mpp::Client::Transport::MAX_PAYMENT_RETRIES)
+  end
 end
