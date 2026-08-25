@@ -49,6 +49,14 @@ module Mpp
         on(Mpp::Events::PAYMENT_RESPONSE, handler, &block)
       end
 
+      # Number of successive 402 responses this transport will attempt to pay
+      # for on a single request. A server can respond to a submitted
+      # credential with a *fresh* 402 rather than success or a final failure
+      # (e.g. the original challenge expired mid-flight, or the credential
+      # was rejected but the server is willing to reissue) — matches
+      # mppx's defaultMaxPaymentRetries (src/client/internal/Fetch.ts).
+      MAX_PAYMENT_RETRIES = 3
+
       # Send an HTTP request with automatic 402 payment handling.
       # Returns [Net::HTTPResponse, body_string].
       sig { params(method: T.untyped, url: T.any(URI::Generic, String), headers: T.untyped, body: T.untyped).returns(T.untyped) }
@@ -56,107 +64,108 @@ module Mpp
         uri = URI(url)
         response = send_request(uri, method, headers, body)
 
-        return response unless response.code.to_i == 402
+        MAX_PAYMENT_RETRIES.times do
+          break unless response.code.to_i == 402
 
-        # Parse WWW-Authenticate headers
-        www_auth_headers = response.get_fields("www-authenticate") || []
-        challenge, matched_method = find_matching_challenge(www_auth_headers, input: url, response: response)
-        return response unless challenge && matched_method
+          # Parse WWW-Authenticate headers
+          www_auth_headers = response.get_fields("www-authenticate") || []
+          challenge, matched_method = find_matching_challenge(www_auth_headers, input: url, response: response)
+          break unless challenge && matched_method
 
-        # Check expiry before paying (client-side guardrail)
-        if challenge.expires
+          # Check expiry before paying (client-side guardrail)
+          if challenge.expires
+            begin
+              expires_dt = Time.iso8601(challenge.expires.gsub("Z", "+00:00"))
+              break if expires_dt < Time.now.utc
+            rescue ArgumentError
+              # If we can't parse, let server validate
+            end
+          end
+
+          auth_header = T.let(nil, T.nilable(String))
+          create_credential = Kernel.lambda do
+            auth_header ||= credential_authorization(matched_method.create_credential(challenge))
+          end
+
           begin
-            expires_dt = Time.iso8601(challenge.expires.gsub("Z", "+00:00"))
-            return response if expires_dt < Time.now.utc
-          rescue ArgumentError
-            # If we can't parse, let server validate
+            event_credential = nil
+            if @events.has_handlers?(Mpp::Events::CHALLENGE_RECEIVED)
+              # challenge.received can override credential creation; first non-empty credential wins.
+              event_credential = @events.emit_first(Mpp::Events::CHALLENGE_RECEIVED, {
+                challenge: challenge,
+                challenges: [challenge],
+                create_credential: create_credential,
+                input: url,
+                method: matched_method,
+                response: response
+              })
+            end
+            auth_header = credential_authorization(event_credential) unless event_credential.nil?
+            auth_header ||= create_credential.call
+
+            if @events.has_handlers?(Mpp::Events::CREDENTIAL_CREATED)
+              @events.emit(Mpp::Events::CREDENTIAL_CREATED, {
+                challenge: challenge,
+                credential: auth_header,
+                input: url,
+                method: matched_method,
+                response: response
+              })
+            end
+          rescue => e
+            if @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+              @events.emit(Mpp::Events::PAYMENT_FAILED, {
+                challenge: challenge,
+                challenges: [challenge],
+                error: e,
+                input: url,
+                method: matched_method,
+                response: response
+              })
+            end
+            raise
           end
-        end
 
-        auth_header = T.let(nil, T.nilable(String))
-        create_credential = Kernel.lambda do
-          auth_header ||= credential_authorization(matched_method.create_credential(challenge))
-        end
-
-        begin
-          event_credential = nil
-          if @events.has_handlers?(Mpp::Events::CHALLENGE_RECEIVED)
-            # challenge.received can override credential creation; first non-empty credential wins.
-            event_credential = @events.emit_first(Mpp::Events::CHALLENGE_RECEIVED, {
-              challenge: challenge,
-              challenges: [challenge],
-              create_credential: create_credential,
-              input: url,
-              method: matched_method,
-              response: response
-            })
+          retry_headers = headers.merge("Authorization" => auth_header)
+          begin
+            response = send_request(uri, method, retry_headers, body)
+          rescue => e
+            if @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+              @events.emit(Mpp::Events::PAYMENT_FAILED, {
+                challenge: challenge,
+                challenges: [challenge],
+                credential: auth_header,
+                error: e,
+                input: url,
+                method: matched_method,
+                response: response
+              })
+            end
+            raise
           end
-          auth_header = credential_authorization(event_credential) unless event_credential.nil?
-          auth_header ||= create_credential.call
 
-          if @events.has_handlers?(Mpp::Events::CREDENTIAL_CREATED)
-            @events.emit(Mpp::Events::CREDENTIAL_CREATED, {
+          if response.code.to_i.between?(200, 299) && @events.has_handlers?(Mpp::Events::PAYMENT_RESPONSE)
+            @events.emit(Mpp::Events::PAYMENT_RESPONSE, {
               challenge: challenge,
               credential: auth_header,
               input: url,
               method: matched_method,
               response: response
             })
-          end
-        rescue => e
-          if @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
-            @events.emit(Mpp::Events::PAYMENT_FAILED, {
-              challenge: challenge,
-              challenges: [challenge],
-              error: e,
-              input: url,
-              method: matched_method,
-              response: response
-            })
-          end
-          raise
-        end
-
-        retry_headers = headers.merge("Authorization" => auth_header)
-        payment_response = nil
-        begin
-          payment_response = send_request(uri, method, retry_headers, body)
-        rescue => e
-          if @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+          elsif @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
             @events.emit(Mpp::Events::PAYMENT_FAILED, {
               challenge: challenge,
               challenges: [challenge],
               credential: auth_header,
-              error: e,
+              error: Mpp::VerificationFailedError.new(reason: "retry returned HTTP #{response.code}"),
               input: url,
               method: matched_method,
               response: response
             })
           end
-          raise
         end
 
-        if payment_response.code.to_i.between?(200, 299) && @events.has_handlers?(Mpp::Events::PAYMENT_RESPONSE)
-          @events.emit(Mpp::Events::PAYMENT_RESPONSE, {
-            challenge: challenge,
-            credential: auth_header,
-            input: url,
-            method: matched_method,
-            response: payment_response
-          })
-        elsif @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
-          @events.emit(Mpp::Events::PAYMENT_FAILED, {
-            challenge: challenge,
-            challenges: [challenge],
-            credential: auth_header,
-            error: Mpp::VerificationFailedError.new(reason: "retry returned HTTP #{payment_response.code}"),
-            input: url,
-            method: matched_method,
-            response: payment_response
-          })
-        end
-
-        payment_response
+        response
       end
 
       sig { params(url: T.any(URI::Generic, String), kwargs: T.untyped).returns(T.untyped) }
