@@ -5,7 +5,6 @@ require "test_helper"
 class TestStripeMethod < Minitest::Test
   def setup
     @method = Mpp::Methods::Stripe::StripeMethod.new(
-      secret_key: "sk_test_fake",
       network_id: "acct_test123",
       payment_methods: ["card"],
       metadata: {"app" => "myapp"}
@@ -54,7 +53,6 @@ class TestStripeMethod < Minitest::Test
   def test_requires_payment_methods_allowlist
     assert_raises(ArgumentError) do
       Mpp::Methods::Stripe::StripeMethod.new(
-        secret_key: "sk_test_fake",
         network_id: "acct_test123"
       )
     end
@@ -63,7 +61,6 @@ class TestStripeMethod < Minitest::Test
   def test_rejects_empty_payment_methods_allowlist
     assert_raises(ArgumentError) do
       Mpp::Methods::Stripe::StripeMethod.new(
-        secret_key: "sk_test_fake",
         network_id: "acct_test123",
         payment_methods: []
       )
@@ -72,7 +69,6 @@ class TestStripeMethod < Minitest::Test
 
   def test_transform_request_omits_nil_metadata
     method = Mpp::Methods::Stripe::StripeMethod.new(
-      secret_key: "sk_test_fake",
       network_id: "acct_test123",
       payment_methods: ["card"]
     )
@@ -85,7 +81,6 @@ class TestStripeMethod < Minitest::Test
 
   def test_transform_request_binds_configured_external_id
     method = Mpp::Methods::Stripe::StripeMethod.new(
-      secret_key: "sk_test_fake",
       network_id: "acct_test123",
       payment_methods: ["card"],
       external_id: "order-123"
@@ -97,7 +92,6 @@ class TestStripeMethod < Minitest::Test
 
   def test_transform_request_preserves_route_external_id
     method = Mpp::Methods::Stripe::StripeMethod.new(
-      secret_key: "sk_test_fake",
       network_id: "acct_test123",
       payment_methods: ["card"],
       external_id: "configured-order"
@@ -138,7 +132,6 @@ class TestStripeMethod < Minitest::Test
     [false, "not callable"].each do |hook|
       error = assert_raises(ArgumentError) do
         Mpp::Methods::Stripe::StripeMethod.new(
-          secret_key: "sk_test_fake",
           network_id: "acct_test123",
           payment_methods: ["card"],
           on_payment_success: hook
@@ -169,7 +162,6 @@ class TestStripeMethod < Minitest::Test
   def test_rejects_non_callable_offer_availability_hook
     error = assert_raises(ArgumentError) do
       Mpp::Methods::Stripe::StripeMethod.new(
-        secret_key: "sk_test_fake",
         network_id: "acct_test123",
         payment_methods: ["card"],
         can_offer: Object.new
@@ -277,5 +269,41 @@ class TestStripeMethod < Minitest::Test
     assert_equal "acct_test123", request["methodDetails"]["networkId"]
     assert_equal ["card"], request["methodDetails"]["paymentMethodTypes"]
     assert_equal({"order" => "abc"}, request["methodDetails"]["metadata"])
+  end
+
+  def test_factory_creates_method_with_settle
+    settle = ->(**_params) { {id: "pi_custom", status: "succeeded"} }
+    method = Mpp::Methods::Stripe.stripe(
+      network_id: "acct_machine_payments",
+      payment_methods: ["card", "link"],
+      settle: settle
+    )
+
+    assert_equal "stripe", method.name
+    assert_equal "acct_machine_payments", method.recipient
+    assert method.intents.key?("charge")
+    assert_instance_of Mpp::Methods::Stripe::ChargeIntent, method.intents["charge"]
+  end
+
+  def test_factory_rejects_secret_key_and_settle
+    error = assert_raises(ArgumentError) do
+      Mpp::Methods::Stripe.stripe(
+        secret_key: "sk_test_fake",
+        network_id: "acct_test123",
+        payment_methods: ["card"],
+        settle: ->(**_params) { {id: "pi_x", status: "succeeded"} }
+      )
+    end
+    assert_equal "pass settle or secret_key, not both", error.message
+  end
+
+  def test_factory_requires_secret_key_or_settle
+    error = assert_raises(ArgumentError) do
+      Mpp::Methods::Stripe.stripe(
+        network_id: "acct_test123",
+        payment_methods: ["card"]
+      )
+    end
+    assert_equal "secret_key or settle is required", error.message
   end
 end

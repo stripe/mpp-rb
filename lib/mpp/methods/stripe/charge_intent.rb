@@ -6,16 +6,48 @@ require "time"
 module Mpp
   module Methods
     module Stripe
-      # Server-side charge intent that verifies payment via Stripe PaymentIntents.
-      # Requires the `stripe` gem.
-      class ChargeIntent
-        attr_reader :name
-
+      # Default settlement via the public Stripe API. Used when `secret_key:` is
+      # passed to ChargeIntent / Stripe.stripe.
+      class StripeApiSettle
         def initialize(secret_key:, api_base: Defaults::STRIPE_API_BASE, client: nil)
-          @name = "charge"
           @secret_key = secret_key
           @api_base = api_base
           @client = client
+        end
+
+        def call(amount:, currency:, spt:, payment_method_types:, idempotency_key:, metadata: nil)
+          unless @client
+            begin
+              Kernel.require "stripe"
+            rescue LoadError
+              raise "stripe gem is required for Stripe charge verification. Install with: gem install stripe"
+            end
+          end
+
+          params = {
+            amount: amount,
+            currency: currency,
+            shared_payment_granted_token: spt,
+            confirm: true,
+            payment_method_types: payment_method_types
+          }
+          params[:metadata] = metadata if metadata
+
+          client = @client || ::Stripe::StripeClient.new(@secret_key)
+          client.v1.payment_intents.create(params, {idempotency_key: idempotency_key})
+        end
+      end
+
+      # Server-side charge intent that verifies payment via Stripe PaymentIntents.
+      #
+      # Pass `secret_key:` to charge through the public Stripe API, or `settle:`
+      # to supply your own PaymentIntent create (callable or object with #settle).
+      class ChargeIntent
+        attr_reader :name
+
+        def initialize(secret_key: nil, api_base: Defaults::STRIPE_API_BASE, client: nil, settle: nil)
+          @name = "charge"
+          @settle = resolve_settle(secret_key: secret_key, api_base: api_base, client: client, settle: settle)
         end
 
         def verify(credential, request)
@@ -52,52 +84,34 @@ module Mpp
             raise Mpp::VerificationError, "Invalid or missing methodDetails.paymentMethodTypes"
           end
 
-          # Build PaymentIntent params
-          params = {
-            amount: Integer(request["amount"]),
-            currency: request["currency"],
-            shared_payment_granted_token: spt,
-            confirm: true,
-            payment_method_types: payment_method_types
-          }
-
-          # Include metadata from methodDetails if present
-          if method_details["metadata"].is_a?(Hash)
-            params[:metadata] = method_details["metadata"].transform_values(&:to_s)
-          end
-
-          unless @client
-            begin
-              Kernel.require "stripe"
-            rescue LoadError
-              raise "stripe gem is required for Stripe charge verification. Install with: gem install stripe"
-            end
+          metadata = if method_details["metadata"].is_a?(Hash)
+            method_details["metadata"].transform_values(&:to_s)
           end
 
           begin
-            client = @client || ::Stripe::StripeClient.new(@secret_key)
-            result = client.v1.payment_intents.create(
-              params,
-              {idempotency_key: stripe_idempotency_key(credential)}
+            result = invoke_settle(
+              amount: Integer(request["amount"]),
+              currency: request["currency"],
+              spt: spt,
+              payment_method_types: payment_method_types,
+              idempotency_key: stripe_idempotency_key(credential),
+              metadata: metadata
             )
+          rescue Mpp::VerificationError, Mpp::PaymentActionRequiredError, Mpp::InvalidChallengeError
+            raise
           rescue => e
             raise Mpp::VerificationError, e.message
           end
 
-          # https://docs.stripe.com/error-low-level#idempotency
-          if result.respond_to?(:last_response) &&
-              result.last_response&.headers&.[]("idempotent-replayed") == "true"
-            raise Mpp::VerificationError, "Payment has already been processed."
-          end
+          pi_id, status, replayed = extract_result(result)
 
-          pi_id = result.id
-          status = result.status
+          raise Mpp::VerificationError, "Payment has already been processed." if replayed
 
-          if status == "requires_action"
+          if status.to_s == "requires_action"
             raise Mpp::PaymentActionRequiredError.new(reason: "PaymentIntent #{pi_id} requires action")
           end
 
-          unless status == "succeeded"
+          unless status.to_s == "succeeded"
             raise Mpp::VerificationError, "PaymentIntent #{pi_id} has status: #{status}"
           end
 
@@ -105,6 +119,60 @@ module Mpp
         end
 
         private
+
+        def resolve_settle(secret_key:, api_base:, client:, settle:)
+          if settle
+            raise ArgumentError, "pass settle or secret_key, not both" unless secret_key.nil?
+            raise ArgumentError, "pass settle or client, not both" unless client.nil?
+            unless settle.respond_to?(:call) || settle.respond_to?(:settle)
+              raise ArgumentError, "settle must be callable or respond to #settle"
+            end
+            return settle
+          end
+
+          return StripeApiSettle.new(secret_key: secret_key, api_base: api_base, client: client) if client
+
+          if secret_key.nil? || secret_key.to_s.empty?
+            raise ArgumentError, "secret_key or settle is required"
+          end
+
+          StripeApiSettle.new(secret_key: secret_key, api_base: api_base)
+        end
+
+        def invoke_settle(params)
+          if !@settle.is_a?(Proc) && @settle.respond_to?(:settle)
+            @settle.settle(**params)
+          else
+            @settle.call(**params)
+          end
+        end
+
+        def extract_result(result)
+          if result.is_a?(Hash)
+            id = result[:id] || result["id"]
+            status = result[:status] || result["status"]
+            replayed = result[:replayed] || result["replayed"]
+          elsif result.nil?
+            raise Mpp::VerificationError, "settle must return an id and status"
+          else
+            id = result.respond_to?(:id) ? result.id : nil
+            status = result.respond_to?(:status) ? result.status : nil
+            replayed = if result.respond_to?(:replayed)
+              result.replayed
+            else
+              stripe_replayed?(result)
+            end
+          end
+
+          raise Mpp::VerificationError, "settle must return an id and status" if id.nil? || status.nil?
+
+          [id, status, replayed == true || replayed == "true"]
+        end
+
+        def stripe_replayed?(result)
+          result.respond_to?(:last_response) &&
+            result.last_response&.headers&.[]("idempotent-replayed") == "true"
+        end
 
         # Include the SPT so a retry with a fresh token is a new PaymentIntent,
         # matching mppx (`prefix_challengeId_spt`). Same challenge + same SPT

@@ -12,7 +12,7 @@ module Mpp
         attr_reader :name, :currency, :recipient, :decimals, :on_payment_success
         attr_accessor :intents
 
-        def initialize(secret_key:, network_id:, payment_methods: nil,
+        def initialize(network_id:, payment_methods: nil,
           metadata: nil, currency: Defaults::DEFAULT_CURRENCY,
           decimals: Defaults::DEFAULT_DECIMALS, external_id: nil,
           on_payment_success: nil, can_offer: nil)
@@ -29,7 +29,6 @@ module Mpp
           end
 
           @name = "stripe"
-          @secret_key = secret_key
           @network_id = network_id
           @payment_methods = payment_methods
           @metadata = metadata
@@ -64,17 +63,32 @@ module Mpp
       end
 
       # Factory function to create a configured StripeMethod with ChargeIntent.
-      def self.stripe(secret_key:, network_id:, payment_methods: nil,
+      #
+      # Pass `secret_key:` to create PaymentIntents through the public Stripe API,
+      # or `settle:` (a callable or object with #settle) to inject your own create.
+      # Exactly one of `secret_key:` or `settle:` is required.
+      def self.stripe(network_id:, payment_methods: nil,
+        secret_key: nil, settle: nil,
         metadata: nil, currency: Defaults::DEFAULT_CURRENCY,
         decimals: Defaults::DEFAULT_DECIMALS,
         external_id: nil,
         on_payment_success: nil,
         can_offer: nil,
         api_base: Defaults::STRIPE_API_BASE)
-        charge_intent = ChargeIntent.new(secret_key: secret_key, api_base: api_base)
+        if settle && secret_key
+          raise ArgumentError, "pass settle or secret_key, not both"
+        end
+        if settle.nil? && (secret_key.nil? || secret_key.to_s.empty?)
+          raise ArgumentError, "secret_key or settle is required"
+        end
+
+        charge_intent = ChargeIntent.new(
+          secret_key: secret_key,
+          api_base: api_base,
+          settle: settle
+        )
 
         method = StripeMethod.new(
-          secret_key: secret_key,
           network_id: network_id,
           payment_methods: payment_methods,
           metadata: metadata,

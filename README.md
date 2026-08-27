@@ -104,6 +104,26 @@ fee_payer: Mpp::Methods::Tempo::Account.from_key(ENV.fetch("FEE_PAYER_KEY"))
 relay: {url: "https://api.tempo.xyz", headers: -> { {"tempo-api-key" => ENV.fetch("TEMPO_API_KEY")} }}
 ```
 
+Stripe charge can settle an SPT through the public API (`secret_key:`) or through your own PaymentIntent create (`settle:`). Use `settle:` when the process must not hold a Stripe secret key:
+
+```ruby
+stripe = Mpp::Methods::Stripe.stripe(
+  network_id: "acct_machine_payments",
+  payment_methods: ["card", "link"],
+  settle: ->(amount:, currency:, spt:, payment_method_types:, idempotency_key:, metadata: nil) {
+    InternalPayments.confirm_spt(
+      amount: amount,
+      currency: currency,
+      spt: spt,
+      payment_method_types: payment_method_types,
+      idempotency_key: idempotency_key,
+      metadata: metadata
+    )
+    # => { id: "pi_...", status: "succeeded" }  (replayed: true to reject retries)
+  }
+)
+```
+
 ### Client
 
 ```ruby
@@ -189,6 +209,7 @@ env["mpp.charge"] = { amount: "0.50", description: "Paid endpoint" }
 |---------|-------------|
 | [tempo_charge](./examples/tempo_charge/) | Tempo testnet payments via Sinatra |
 | [stripe_charge](./examples/stripe_charge/) | Stripe payments via Shared Payment Tokens |
+| [stripe_settle](./examples/stripe_settle/) | Stripe SPTs settled with a custom `settle:` callable (no secret key) |
 | [compose](./examples/compose/) | Tempo + Base USDC + Stripe SPTs on one endpoint |
 | [evm_x402](./examples/evm_x402/) | EVM charge with x402 exact compatibility |
 | [tempo_feepayer](./examples/tempo_feepayer/) | Tempo charge with a hosted fee-payer `{url:, headers:}` |

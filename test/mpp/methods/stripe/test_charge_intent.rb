@@ -32,6 +32,10 @@ class TestStripeChargeIntent < Minitest::Test
     Mpp::Methods::Stripe::ChargeIntent.new(secret_key: "sk_test_fake", client: client)
   end
 
+  def intent_with_settle(settle)
+    Mpp::Methods::Stripe::ChargeIntent.new(settle: settle)
+  end
+
   def with_fake_stripe_client(payment_intents)
     created_secret_keys = []
     previous_stripe = nil
@@ -261,5 +265,134 @@ class TestStripeChargeIntent < Minitest::Test
     assert_raises(Mpp::PaymentActionRequiredError) do
       intent_with_payment_intents(payment_intents).verify(credential, request)
     end
+  end
+
+  def test_requires_secret_key_or_settle
+    error = assert_raises(ArgumentError) do
+      Mpp::Methods::Stripe::ChargeIntent.new
+    end
+    assert_equal "secret_key or settle is required", error.message
+  end
+
+  def test_rejects_settle_and_secret_key
+    error = assert_raises(ArgumentError) do
+      Mpp::Methods::Stripe::ChargeIntent.new(
+        secret_key: "sk_test_fake",
+        settle: ->(**_params) { {id: "pi_x", status: "succeeded"} }
+      )
+    end
+    assert_equal "pass settle or secret_key, not both", error.message
+  end
+
+  def test_rejects_non_callable_settle
+    error = assert_raises(ArgumentError) do
+      Mpp::Methods::Stripe::ChargeIntent.new(settle: "not-callable")
+    end
+    assert_equal "settle must be callable or respond to #settle", error.message
+  end
+
+  def test_verify_calls_settle_callable
+    credential = make_credential(payload: {"spt" => "spt_test123", "externalId" => "ext_1"})
+    request = make_request(
+      payment_method_types: ["card", "link"],
+      method_details: {"metadata" => {"order" => "123"}},
+      external_id: "ext_1"
+    )
+    seen = []
+    settle = ->(**params) {
+      seen << params
+      {id: "pi_internal", status: "succeeded"}
+    }
+
+    receipt = intent_with_settle(settle).verify(credential, request)
+
+    assert_equal "success", receipt.status
+    assert_equal "pi_internal", receipt.reference
+    assert_equal "stripe", receipt.method
+    assert_equal "ext_1", receipt.external_id
+    assert_equal 1, seen.length
+    assert_equal 100, seen[0][:amount]
+    assert_equal "usd", seen[0][:currency]
+    assert_equal "spt_test123", seen[0][:spt]
+    assert_equal ["card", "link"], seen[0][:payment_method_types]
+    assert_equal({"order" => "123"}, seen[0][:metadata])
+    assert_equal "mpp_test-id_spt_test123", seen[0][:idempotency_key]
+  end
+
+  def test_verify_calls_object_settle_method
+    credential = make_credential(payload: {"spt" => "spt_test123"})
+    request = make_request
+    settler = Object.new
+    def settler.settle(amount:, currency:, spt:, payment_method_types:, idempotency_key:, metadata: nil)
+      {id: "pi_from_method", status: "succeeded"}
+    end
+
+    receipt = intent_with_settle(settler).verify(credential, request)
+
+    assert_equal "pi_from_method", receipt.reference
+  end
+
+  def test_verify_settle_string_keys
+    credential = make_credential(payload: {"spt" => "spt_test123"})
+    request = make_request
+    settle = ->(**_params) { {"id" => "pi_strings", "status" => "succeeded"} }
+
+    receipt = intent_with_settle(settle).verify(credential, request)
+
+    assert_equal "pi_strings", receipt.reference
+  end
+
+  def test_verify_settle_replayed
+    credential = make_credential(payload: {"spt" => "spt_test123"})
+    request = make_request
+    settle = ->(**_params) { {id: "pi_replay", status: "succeeded", replayed: true} }
+
+    err = assert_raises(Mpp::VerificationError) do
+      intent_with_settle(settle).verify(credential, request)
+    end
+    assert_equal "Payment has already been processed.", err.message
+  end
+
+  def test_verify_settle_requires_action
+    credential = make_credential(payload: {"spt" => "spt_test123"})
+    request = make_request
+    settle = ->(**_params) { {id: "pi_3ds", status: "requires_action"} }
+
+    assert_raises(Mpp::PaymentActionRequiredError) do
+      intent_with_settle(settle).verify(credential, request)
+    end
+  end
+
+  def test_verify_settle_failed_status
+    credential = make_credential(payload: {"spt" => "spt_test123"})
+    request = make_request
+    settle = ->(**_params) { {id: "pi_fail", status: "canceled"} }
+
+    err = assert_raises(Mpp::VerificationError) do
+      intent_with_settle(settle).verify(credential, request)
+    end
+    assert_match(/canceled/, err.message)
+  end
+
+  def test_verify_settle_exception_becomes_verification_error
+    credential = make_credential(payload: {"spt" => "spt_test123"})
+    request = make_request
+    settle = ->(**_params) { raise StandardError, "card declined" }
+
+    err = assert_raises(Mpp::VerificationError) do
+      intent_with_settle(settle).verify(credential, request)
+    end
+    assert_equal "card declined", err.message
+  end
+
+  def test_verify_settle_missing_result_fields
+    credential = make_credential(payload: {"spt" => "spt_test123"})
+    request = make_request
+    settle = ->(**_params) { {status: "succeeded"} }
+
+    err = assert_raises(Mpp::VerificationError) do
+      intent_with_settle(settle).verify(credential, request)
+    end
+    assert_match(/id and status/, err.message)
   end
 end
