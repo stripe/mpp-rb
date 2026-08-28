@@ -122,8 +122,8 @@ class TestMachinePayments < Minitest::Test
     assert_equal "base", base_params.dig(:payment_method_options, :crypto, :transaction_verification_options, :network)
     assert_equal "0xtempo", tempo_options[:idempotency_key]
     assert_equal "0xbase", base_options[:idempotency_key]
-    assert_equal({"order" => "123"}, tempo_params[:metadata])
-    assert_equal({"order" => "123"}, base_params[:metadata])
+    assert_equal({"machine_payment" => "true", "order" => "123"}, tempo_params[:metadata])
+    assert_equal({"machine_payment" => "true", "order" => "123"}, base_params[:metadata])
     assert_equal Mpp::Methods::Stripe::Defaults::MACHINE_PAYMENTS_API_VERSION, tempo_options[:stripe_version]
   end
 
@@ -139,7 +139,7 @@ class TestMachinePayments < Minitest::Test
     params, = client.payment_intents.calls.first
     assert_equal "spt_test", params[:shared_payment_granted_token]
     assert_equal ["card", "link"], params[:payment_method_types]
-    assert_equal({"order" => "123"}, params[:metadata])
+    assert_equal({"machine_payment" => "true", "order" => "123"}, params[:metadata])
   end
 
   def test_crypto_recorder_rounds_before_applying_the_one_cent_minimum

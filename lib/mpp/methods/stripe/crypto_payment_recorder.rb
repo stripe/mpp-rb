@@ -35,7 +35,8 @@ module Mpp
               }
             }
           }
-          params[:metadata] = @metadata.transform_values(&:to_s) if @metadata.is_a?(Hash)
+          metadata = @metadata.is_a?(Hash) ? @metadata.transform_values(&:to_s) : {}
+          params[:metadata] = metadata.merge("machine_payment" => "true")
 
           @client.v1.payment_intents.create(
             params,

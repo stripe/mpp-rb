@@ -136,7 +136,7 @@ class TestStripeChargeIntent < Minitest::Test
       assert_equal true, params[:confirm]
       assert_equal ["card", "link"], params[:payment_method_types]
       refute params.key?(:automatic_payment_methods)
-      assert_equal({"order" => "123"}, params[:metadata])
+      assert_equal({"machine_payment" => "true", "order" => "123"}, params[:metadata])
       assert_equal "mpp_test-id_spt_test123", opts[:idempotency_key]
       assert_equal Mpp::Methods::Stripe::Defaults::MACHINE_PAYMENTS_API_VERSION, opts[:stripe_version]
     end)

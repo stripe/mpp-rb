@@ -61,10 +61,8 @@ module Mpp
             payment_method_types: payment_method_types
           }
 
-          # Include metadata from methodDetails if present
-          if method_details["metadata"].is_a?(Hash)
-            params[:metadata] = method_details["metadata"].transform_values(&:to_s)
-          end
+          metadata = method_details["metadata"].is_a?(Hash) ? method_details["metadata"].transform_values(&:to_s) : {}
+          params[:metadata] = metadata.merge("machine_payment" => "true")
 
           unless @client
             begin
