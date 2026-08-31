@@ -98,6 +98,57 @@ class TestTempoChargeIntent < Minitest::Test
     assert_match(/Transaction hash already used/, error.message)
   end
 
+  def test_default_server_blocks_hash_credential_replay
+    server = Mpp.create(
+      method: Mpp::Methods::Tempo.tempo(
+        chain_id: Mpp::Methods::Tempo::Defaults::TESTNET_CHAIN_ID,
+        currency: Mpp::Methods::Tempo::Defaults::PATH_USD,
+        recipient: RECIPIENT,
+        intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new}
+      ),
+      realm: REALM,
+      secret_key: "test-secret"
+    )
+    challenge = server.charge(nil, "0.01", description: "Paid endpoint")
+    assert_instance_of Mpp::Challenge, challenge
+
+    amount = Integer(challenge.request["amount"])
+    memo = Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: challenge.id)
+    tx_hash = "0x#{"ab" * 32}"
+    receipt_data = {
+      "status" => "0x1",
+      "from" => SENDER,
+      "logs" => [{
+        "address" => Mpp::Methods::Tempo::Defaults::PATH_USD,
+        "topics" => [
+          Mpp::Methods::Tempo::TRANSFER_WITH_MEMO_TOPIC,
+          topic_address(SENDER),
+          topic_address(RECIPIENT),
+          memo
+        ],
+        "data" => "0x#{amount.to_s(16).rjust(64, "0")}"
+      }]
+    }
+    auth = Mpp::Credential.new(
+      challenge: challenge.to_echo,
+      payload: {"type" => "hash", "hash" => tx_hash}
+    ).to_authorization
+
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, method, params) {
+      assert_equal "eth_getTransactionReceipt", method
+      assert_equal [tx_hash], params
+      receipt_data
+    }) do
+      _credential, paid = server.charge(auth, "0.01", description: "Paid endpoint")
+      assert_equal tx_hash, paid.reference
+
+      error = assert_raises(Mpp::VerificationError) do
+        server.charge(auth, "0.01", description: "Paid endpoint")
+      end
+      assert_match(/Transaction hash already used/, error.message)
+    end
+  end
+
   def test_transaction_credential_replay_rejected_after_success
     raw_tx = "0xabcdef1234567890"
     tx_hash = raw_transaction_hash(raw_tx)
