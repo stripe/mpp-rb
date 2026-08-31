@@ -198,10 +198,10 @@ module Mpp
             raise Mpp::VerificationError, "No transaction hash returned"
           end
 
-          if tx_hash.downcase != reserved_tx_hash.downcase
-            @store.delete(store_key)
-            raise Mpp::VerificationError, "Returned transaction hash does not match submitted transaction"
-          end
+          # Tempo nodes hash canonical RLP, which can differ from keccak(raw
+          # bytes). Replay keys must follow the chain hash so a later hash
+          # credential for the same payment is rejected.
+          store_key, reserved_tx_hash = rebase_reservation_to_chain_hash(store_key, reserved_tx_hash, tx_hash)
 
           receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
           verify_transaction_receipt!(receipt_data, request, credential: credential)
@@ -390,6 +390,24 @@ module Mpp
           end
 
           "0x#{Attribution.keccak256([hex].pack("H*")).unpack1("H*")}"
+        end
+
+        def normalize_tx_hash(tx_hash)
+          hex = tx_hash.to_s.downcase
+          hex.start_with?("0x") ? hex : "0x#{hex}"
+        end
+
+        def rebase_reservation_to_chain_hash(store_key, reserved_tx_hash, returned_tx_hash)
+          canonical = normalize_tx_hash(returned_tx_hash)
+          return [store_key, reserved_tx_hash] if canonical == reserved_tx_hash.downcase
+
+          canonical_key = "mpp:charge:#{canonical}"
+          @store.delete(store_key)
+          unless @store.put_if_absent(canonical_key, TRANSACTION_PENDING)
+            raise Mpp::VerificationError, "Transaction hash already used" unless @store.get(canonical_key) == TRANSACTION_PENDING
+          end
+
+          [canonical_key, canonical]
         end
 
         def match_transfer_calldata(call_data_hex, request, challenge: nil)
