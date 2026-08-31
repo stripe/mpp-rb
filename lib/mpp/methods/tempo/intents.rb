@@ -22,7 +22,9 @@ module Mpp
         attr_reader :name
         attr_accessor :rpc_url
 
-        def initialize(chain_id: nil, rpc_url: nil, timeout: 30, store: nil, validate_sender: nil)
+        def initialize(chain_id: nil, rpc_url: nil, timeout: 30, store: Mpp::MemoryStore.new, validate_sender: nil)
+          raise ArgumentError, "store is required" if store.nil?
+
           @name = "charge"
           @rpc_url = rpc_url || (chain_id ? Defaults.rpc_url_for_chain(chain_id) : nil)
           @_method = nil
@@ -111,11 +113,9 @@ module Mpp
           # Validate the source before reserving the hash.
           source_address = parse_hash_credential_source(credential.source, request.method_details.chain_id)
 
-          if @store
-            store_key = "mpp:charge:#{payload.hash.downcase}"
-            raise Mpp::VerificationError, "Transaction hash already used" unless @store.put_if_absent(store_key,
-              payload.hash)
-          end
+          store_key = "mpp:charge:#{payload.hash.downcase}"
+          raise Mpp::VerificationError, "Transaction hash already used" unless @store.put_if_absent(store_key,
+            payload.hash)
 
           rpc_url = get_rpc_url
           result = Rpc.call(rpc_url, "eth_getTransactionReceipt", [payload.hash])
@@ -158,19 +158,15 @@ module Mpp
           end
 
           rpc_url = get_rpc_url
-          reserved_tx_hash = T.let(nil, T.nilable(String))
-          store_key = T.let(nil, T.nilable(String))
-          if @store
-            reserved_tx_hash = raw_transaction_hash(raw_tx)
-            store_key = "mpp:charge:#{reserved_tx_hash.downcase}"
-            unless @store.put_if_absent(store_key, TRANSACTION_PENDING)
-              raise Mpp::VerificationError, "Transaction hash already used" unless @store.get(store_key) == TRANSACTION_PENDING
+          reserved_tx_hash = raw_transaction_hash(raw_tx)
+          store_key = "mpp:charge:#{reserved_tx_hash.downcase}"
+          unless @store.put_if_absent(store_key, TRANSACTION_PENDING)
+            raise Mpp::VerificationError, "Transaction hash already used" unless @store.get(store_key) == TRANSACTION_PENDING
 
-              receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
-              verify_transaction_receipt!(receipt_data, request, credential: credential)
-              @store.put(store_key, TRANSACTION_VERIFIED)
-              return Mpp::Receipt.success(reserved_tx_hash)
-            end
+            receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
+            verify_transaction_receipt!(receipt_data, request, credential: credential)
+            @store.put(store_key, TRANSACTION_VERIFIED)
+            return Mpp::Receipt.success(reserved_tx_hash)
           end
 
           # We pay the gas, so simulate the co-signed tx first and bail if it
@@ -178,7 +174,7 @@ module Mpp
           begin
             simulate_before_broadcast(simulate_payload, rpc_url) if simulate_payload
           rescue
-            @store.delete(store_key) if @store && store_key
+            @store.delete(store_key)
             raise
           end
 
@@ -186,33 +182,32 @@ module Mpp
           begin
             tx_hash = Rpc.call(rpc_url, "eth_sendRawTransaction", [raw_tx])
           rescue => e
-            if reserved_tx_hash && store_key && transaction_submission_may_have_succeeded?(e)
+            if transaction_submission_may_have_succeeded?(e)
               receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
               verify_transaction_receipt!(receipt_data, request, credential: credential)
-              @store&.put(store_key, TRANSACTION_VERIFIED)
+              @store.put(store_key, TRANSACTION_VERIFIED)
               return Mpp::Receipt.success(reserved_tx_hash)
             end
 
-            @store.delete(store_key) if @store && store_key
+            @store.delete(store_key)
             raise Mpp::VerificationError, "Transaction submission failed: #{e.message}"
           end
 
           unless tx_hash
-            @store.delete(store_key) if @store && store_key
+            @store.delete(store_key)
             raise Mpp::VerificationError, "No transaction hash returned"
           end
 
-          if reserved_tx_hash && tx_hash.downcase != reserved_tx_hash.downcase
-            @store.delete(store_key) if @store && store_key
+          if tx_hash.downcase != reserved_tx_hash.downcase
+            @store.delete(store_key)
             raise Mpp::VerificationError, "Returned transaction hash does not match submitted transaction"
           end
 
-          tx_hash = reserved_tx_hash || tx_hash
-          receipt_data = fetch_transaction_receipt(rpc_url, tx_hash)
+          receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
           verify_transaction_receipt!(receipt_data, request, credential: credential)
-          @store.put(store_key, TRANSACTION_VERIFIED) if @store && store_key
+          @store.put(store_key, TRANSACTION_VERIFIED)
 
-          Mpp::Receipt.success(tx_hash)
+          Mpp::Receipt.success(reserved_tx_hash)
         end
 
         def transaction_submission_may_have_succeeded?(error)
@@ -389,17 +384,12 @@ module Mpp
         end
 
         def raw_transaction_hash(raw_tx)
-          Kernel.require "eth"
-
           hex = raw_tx.delete_prefix("0x")
           unless hex.match?(/\A[0-9a-fA-F]+\z/) && hex.length.even?
             raise Mpp::VerificationError, "Invalid transaction signature"
           end
 
-          "0x#{Eth::Util.keccak256([hex].pack("H*")).unpack1("H*")}"
-        rescue LoadError
-          raise Mpp::VerificationError,
-            "eth gem is required to compute transaction hash for transaction replay protection"
+          "0x#{Attribution.keccak256([hex].pack("H*")).unpack1("H*")}"
         end
 
         def match_transfer_calldata(call_data_hex, request, challenge: nil)
@@ -455,10 +445,8 @@ module Mpp
           )
           raise Mpp::VerificationError, "Proof signature does not match source" unless valid
 
-          if @store
-            store_key = "mpp:proof:#{credential.challenge.id}"
-            raise Mpp::VerificationError, "Proof credential has already been used" unless @store.put_if_absent(store_key, true)
-          end
+          store_key = "mpp:proof:#{credential.challenge.id}"
+          raise Mpp::VerificationError, "Proof credential has already been used" unless @store.put_if_absent(store_key, true)
 
           Mpp::Receipt.success(credential.challenge.id)
         end

@@ -223,8 +223,8 @@ class TempoLiveIntegrationTest < Minitest::Test
     )
   end
 
-  def charge_intent(store: nil)
-    Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: RPC_URL, store: store)
+  def charge_intent(**opts)
+    Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: RPC_URL, **opts)
   end
 
   def challenge_for(recipient:, memo: nil)
