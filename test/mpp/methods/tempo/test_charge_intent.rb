@@ -74,6 +74,81 @@ class TestTempoChargeIntent < Minitest::Test
     assert_equal HASH, result.reference
   end
 
+  def test_initialize_rejects_nil_store
+    error = assert_raises(ArgumentError) do
+      Mpp::Methods::Tempo::ChargeIntent.new(store: nil)
+    end
+
+    assert_match(/store is required/, error.message)
+  end
+
+  def test_default_store_rejects_hash_replay
+    memo = Mpp::Methods::Tempo::Attribution.encode(
+      server_id: REALM,
+      challenge_id: "challenge-123"
+    )
+    receipt_data = receipt([transfer_log(memo: memo)])
+
+    first = verify_hash(receipt_data, challenge_id: "challenge-123")
+    assert_equal HASH, first.reference
+
+    error = assert_raises(Mpp::VerificationError) do
+      verify_hash(receipt_data, challenge_id: "challenge-123")
+    end
+    assert_match(/Transaction hash already used/, error.message)
+  end
+
+  def test_default_server_blocks_hash_credential_replay
+    server = Mpp.create(
+      method: Mpp::Methods::Tempo.tempo(
+        chain_id: Mpp::Methods::Tempo::Defaults::TESTNET_CHAIN_ID,
+        currency: Mpp::Methods::Tempo::Defaults::PATH_USD,
+        recipient: RECIPIENT,
+        intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new}
+      ),
+      realm: REALM,
+      secret_key: "test-secret"
+    )
+    challenge = server.charge(nil, "0.01", description: "Paid endpoint")
+    assert_instance_of Mpp::Challenge, challenge
+
+    amount = Integer(challenge.request["amount"])
+    memo = Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: challenge.id)
+    tx_hash = "0x#{"ab" * 32}"
+    receipt_data = {
+      "status" => "0x1",
+      "from" => SENDER,
+      "logs" => [{
+        "address" => Mpp::Methods::Tempo::Defaults::PATH_USD,
+        "topics" => [
+          Mpp::Methods::Tempo::TRANSFER_WITH_MEMO_TOPIC,
+          topic_address(SENDER),
+          topic_address(RECIPIENT),
+          memo
+        ],
+        "data" => "0x#{amount.to_s(16).rjust(64, "0")}"
+      }]
+    }
+    auth = Mpp::Credential.new(
+      challenge: challenge.to_echo,
+      payload: {"type" => "hash", "hash" => tx_hash}
+    ).to_authorization
+
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, method, params) {
+      assert_equal "eth_getTransactionReceipt", method
+      assert_equal [tx_hash], params
+      receipt_data
+    }) do
+      _credential, paid = server.charge(auth, "0.01", description: "Paid endpoint")
+      assert_equal tx_hash, paid.reference
+
+      error = assert_raises(Mpp::VerificationError) do
+        server.charge(auth, "0.01", description: "Paid endpoint")
+      end
+      assert_match(/Transaction hash already used/, error.message)
+    end
+  end
+
   def test_transaction_credential_replay_rejected_after_success
     raw_tx = "0xabcdef1234567890"
     tx_hash = raw_transaction_hash(raw_tx)
@@ -115,6 +190,39 @@ class TestTempoChargeIntent < Minitest::Test
     methods = calls.map(&:first)
     assert_equal 1, methods.count("eth_sendRawTransaction")
     assert_equal 1, methods.count("eth_getTransactionReceipt")
+  end
+
+  def test_default_store_rejects_transaction_replay
+    raw_tx = "0xabcdef1234567890"
+    tx_hash = raw_transaction_hash(raw_tx)
+    challenge_id = "challenge-123"
+    memo = Mpp::Methods::Tempo::Attribution.encode(
+      server_id: REALM,
+      challenge_id: challenge_id
+    )
+    receipt_data = receipt([transfer_log(memo: memo)])
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test")
+    credential = transaction_credential(raw_tx, challenge_id: challenge_id)
+
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, method, params) {
+      case method
+      when "eth_sendRawTransaction"
+        tx_hash
+      when "eth_getTransactionReceipt"
+        assert_equal [tx_hash], params
+        receipt_data
+      else
+        raise "unexpected RPC method: #{method}"
+      end
+    }) do
+      first = intent.verify(credential, request_hash)
+      assert_equal tx_hash, first.reference
+
+      error = assert_raises(Mpp::VerificationError) do
+        intent.verify(credential, request_hash)
+      end
+      assert_match(/Transaction hash already used/, error.message)
+    end
   end
 
   def test_transaction_credential_duplicate_pending_raises_pending_without_rebroadcast
@@ -244,11 +352,16 @@ class TestTempoChargeIntent < Minitest::Test
     assert_equal 1, methods.count("eth_getTransactionReceipt")
   end
 
-  def test_transaction_credential_releases_reservation_on_returned_hash_mismatch
+  def test_transaction_credential_rebases_reservation_when_rpc_hash_differs
     raw_tx = "0xabcdef1234567890"
-    tx_hash = raw_transaction_hash(raw_tx)
-    wrong_tx_hash = "0x#{"12" * 32}"
+    local_hash = raw_transaction_hash(raw_tx)
+    chain_hash = "0x#{"12" * 32}"
     challenge_id = "challenge-123"
+    memo = Mpp::Methods::Tempo::Attribution.encode(
+      server_id: REALM,
+      challenge_id: challenge_id
+    )
+    receipt_data = receipt([transfer_log(memo: memo)])
     store = Mpp::MemoryStore.new
     intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
     credential = transaction_credential(raw_tx, challenge_id: challenge_id)
@@ -257,7 +370,54 @@ class TestTempoChargeIntent < Minitest::Test
       case method
       when "eth_sendRawTransaction"
         assert_equal [raw_tx], params
-        wrong_tx_hash
+        chain_hash
+      when "eth_getTransactionReceipt"
+        assert_equal [chain_hash], params
+        receipt_data
+      else
+        raise "unexpected RPC method: #{method}"
+      end
+    }) do
+      result = intent.verify(credential, request_hash)
+      assert_equal chain_hash, result.reference
+    end
+
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{local_hash.downcase}")
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{chain_hash.downcase}")
+  end
+
+  def test_rebase_keeps_raw_claim_while_canonical_is_pending
+    store = Mpp::MemoryStore.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    raw_hash = "0x#{"ab" * 32}"
+    chain_hash = "0x#{"cd" * 32}"
+    raw_key = "mpp:charge:#{raw_hash}"
+    store.put(raw_key, Mpp::Methods::Tempo::TRANSACTION_PENDING)
+
+    canonical_key, canonical = intent.send(
+      :rebase_reservation_to_chain_hash, raw_key, raw_hash, chain_hash
+    )
+
+    assert_equal "mpp:charge:#{chain_hash}", canonical_key
+    assert_equal chain_hash, canonical
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_PENDING, store.get(raw_key)
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_PENDING, store.get(canonical_key)
+  end
+
+  def test_transaction_credential_rejects_rpc_hash_already_claimed
+    raw_tx = "0xabcdef1234567890"
+    local_hash = raw_transaction_hash(raw_tx)
+    chain_hash = "0x#{"12" * 32}"
+    challenge_id = "challenge-123"
+    store = Mpp::MemoryStore.new
+    store.put("mpp:charge:#{chain_hash}", Mpp::Methods::Tempo::TRANSACTION_VERIFIED)
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    credential = transaction_credential(raw_tx, challenge_id: challenge_id)
+
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, method, params) {
+      case method
+      when "eth_sendRawTransaction"
+        chain_hash
       else
         raise "unexpected RPC method: #{method}"
       end
@@ -265,10 +425,11 @@ class TestTempoChargeIntent < Minitest::Test
       error = assert_raises(Mpp::VerificationError) do
         intent.verify(credential, request_hash)
       end
-      assert_match(/Returned transaction hash does not match/, error.message)
+      assert_match(/Transaction hash already used/, error.message)
     end
 
-    assert_nil store.get("mpp:charge:#{tx_hash.downcase}")
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{local_hash.downcase}")
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{chain_hash}")
   end
 
   def test_transaction_credential_releases_reservation_on_simulation_failure
@@ -351,6 +512,48 @@ class TestTempoChargeIntent < Minitest::Test
     assert store.get("mpp:proof:#{challenge_id}")
 
     # Replaying the identical credential is rejected.
+    error = assert_raises(Mpp::VerificationError) do
+      intent.verify(credential, request)
+    end
+    assert_match(/already been used/, error.message)
+  end
+
+  def test_default_store_rejects_proof_replay
+    account = Mpp::Methods::Tempo::Account.from_key("0x#{"11" * 32}")
+    chain_id = 4217
+    challenge_id = "challenge-proof-default"
+
+    signature = Mpp::Methods::Tempo::Proof.sign(
+      account: account,
+      chain_id: chain_id,
+      challenge_id: challenge_id,
+      realm: REALM
+    )
+
+    credential = Mpp::Credential.new(
+      challenge: Mpp::ChallengeEcho.new(
+        id: challenge_id,
+        realm: REALM,
+        method: "tempo",
+        intent: "charge",
+        request: ""
+      ),
+      payload: {"type" => "proof", "signature" => signature},
+      source: Mpp::Methods::Tempo::Proof.source(address: account.address, chain_id: chain_id)
+    )
+
+    request = {
+      "amount" => "0",
+      "currency" => CURRENCY,
+      "recipient" => RECIPIENT,
+      "methodDetails" => {"chainId" => chain_id}
+    }
+
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test")
+
+    receipt = intent.verify(credential, request)
+    assert_equal challenge_id, receipt.reference
+
     error = assert_raises(Mpp::VerificationError) do
       intent.verify(credential, request)
     end
@@ -558,9 +761,7 @@ class TestTempoChargeIntent < Minitest::Test
   end
 
   def raw_transaction_hash(raw_tx)
-    require "eth"
-
-    "0x#{Eth::Util.keccak256([raw_tx.delete_prefix("0x")].pack("H*")).unpack1("H*")}"
+    "0x#{Mpp::Methods::Tempo::Attribution.keccak256([raw_tx.delete_prefix("0x")].pack("H*")).unpack1("H*")}"
   end
 
   def transaction_credential(raw_tx, challenge_id:)
