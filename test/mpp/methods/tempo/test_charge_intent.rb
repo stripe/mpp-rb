@@ -382,8 +382,26 @@ class TestTempoChargeIntent < Minitest::Test
       assert_equal chain_hash, result.reference
     end
 
-    assert_nil store.get("mpp:charge:#{local_hash.downcase}")
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{local_hash.downcase}")
     assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{chain_hash.downcase}")
+  end
+
+  def test_rebase_keeps_raw_claim_while_canonical_is_pending
+    store = Mpp::MemoryStore.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    raw_hash = "0x#{"ab" * 32}"
+    chain_hash = "0x#{"cd" * 32}"
+    raw_key = "mpp:charge:#{raw_hash}"
+    store.put(raw_key, Mpp::Methods::Tempo::TRANSACTION_PENDING)
+
+    canonical_key, canonical = intent.send(
+      :rebase_reservation_to_chain_hash, raw_key, raw_hash, chain_hash
+    )
+
+    assert_equal "mpp:charge:#{chain_hash}", canonical_key
+    assert_equal chain_hash, canonical
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_PENDING, store.get(raw_key)
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_PENDING, store.get(canonical_key)
   end
 
   def test_transaction_credential_rejects_rpc_hash_already_claimed
@@ -410,7 +428,7 @@ class TestTempoChargeIntent < Minitest::Test
       assert_match(/Transaction hash already used/, error.message)
     end
 
-    assert_nil store.get("mpp:charge:#{local_hash.downcase}")
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{local_hash.downcase}")
     assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{chain_hash}")
   end
 

@@ -200,12 +200,16 @@ module Mpp
 
           # Tempo nodes hash canonical RLP, which can differ from keccak(raw
           # bytes). Replay keys must follow the chain hash so a later hash
-          # credential for the same payment is rejected.
+          # credential for the same payment is rejected. Keep the raw-hash
+          # claim until verification finishes so a concurrent retry cannot
+          # rebroadcast the same payload.
+          raw_store_key = store_key
           store_key, reserved_tx_hash = rebase_reservation_to_chain_hash(store_key, reserved_tx_hash, tx_hash)
 
           receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
           verify_transaction_receipt!(receipt_data, request, credential: credential)
           @store.put(store_key, TRANSACTION_VERIFIED)
+          @store.put(raw_store_key, TRANSACTION_VERIFIED) if raw_store_key != store_key
 
           Mpp::Receipt.success(reserved_tx_hash)
         end
@@ -402,9 +406,11 @@ module Mpp
           return [store_key, reserved_tx_hash] if canonical == reserved_tx_hash.downcase
 
           canonical_key = "mpp:charge:#{canonical}"
-          @store.delete(store_key)
           unless @store.put_if_absent(canonical_key, TRANSACTION_PENDING)
-            raise Mpp::VerificationError, "Transaction hash already used" unless @store.get(canonical_key) == TRANSACTION_PENDING
+            unless @store.get(canonical_key) == TRANSACTION_PENDING
+              @store.put(store_key, TRANSACTION_VERIFIED)
+              raise Mpp::VerificationError, "Transaction hash already used"
+            end
           end
 
           [canonical_key, canonical]
