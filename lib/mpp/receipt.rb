@@ -2,8 +2,8 @@
 # frozen_string_literal: true
 
 module Mpp
-  Receipt = Data.define(:status, :timestamp, :reference, :method, :external_id, :extra, :subscription_id) do
-    def initialize(status:, timestamp:, reference:, method: "", external_id: nil, extra: nil, subscription_id: nil)
+  Receipt = Data.define(:status, :timestamp, :reference, :method, :external_id, :extra, :subscription_id, :extensions) do
+    def initialize(status:, timestamp:, reference:, method: "", external_id: nil, extra: nil, subscription_id: nil, extensions: nil)
       super
     end
 
@@ -18,7 +18,7 @@ module Mpp
     end
 
     # Create a success receipt with current timestamp.
-    def self.success(reference, timestamp: nil, method: "tempo", external_id: nil, extra: nil, subscription_id: nil)
+    def self.success(reference, timestamp: nil, method: "tempo", external_id: nil, extra: nil, subscription_id: nil, extensions: nil)
       new(
         status: "success",
         timestamp: timestamp || Time.now.utc,
@@ -26,7 +26,8 @@ module Mpp
         method: method,
         external_id: external_id,
         subscription_id: subscription_id,
-        extra: extra
+        extra: extra,
+        extensions: extensions
       )
     end
   end

@@ -282,6 +282,36 @@ class TestParsing < Minitest::Test
     end
   end
 
+  def test_parse_payment_receipt_preserves_method_extension_fields
+    encoded = Mpp::Parsing.b64_encode(
+      "status" => "success",
+      "timestamp" => "2026-01-15T12:00:30Z",
+      "reference" => "0xabc123",
+      "method" => "tempo",
+      "originTxHash" => "0xdeadbeef"
+    )
+
+    parsed = Mpp::Receipt.from_payment_receipt(encoded)
+
+    # Unknown top-level fields are captured in extensions, not dropped.
+    assert_equal "0xdeadbeef", parsed.extensions["originTxHash"]
+
+    # They are not smuggled into extra.
+    assert_nil parsed.extra
+
+    # Known base fields never leak into extensions.
+    refute parsed.extensions.key?("reference")
+
+    # Re-emitted at the top level on format, not nested under "extra".
+    formatted = Mpp::Parsing.b64_decode(parsed.to_payment_receipt)
+    assert_equal "0xdeadbeef", formatted["originTxHash"]
+    refute formatted.key?("extra")
+
+    # A full parse -> format -> parse round trip preserves it unchanged.
+    reparsed = Mpp::Receipt.from_payment_receipt(parsed.to_payment_receipt)
+    assert_equal "0xdeadbeef", reparsed.extensions["originTxHash"]
+  end
+
   def test_challenge_to_echo
     challenge = Mpp::Challenge.create(
       secret_key: "test-secret",
