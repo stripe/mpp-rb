@@ -160,18 +160,15 @@ module Mpp
         begin
           receipt = intent.verify(credential, request)
         rescue => e
-          if dispatcher&.has_handlers?(Mpp::Events::PAYMENT_FAILED)
-            emit_payment_failed(
-              dispatcher: dispatcher,
-              challenge: echo,
-              credential: credential,
-              error: e,
-              method: T.must(method_context),
-              request: request,
-              submitted_challenge: echo
-            )
-          end
-          Kernel.raise
+          # Every other verification failure in this function returns a
+          # fresh challenge via new_challenge.call (which itself emits
+          # payment_failed when an error is present) rather than raising.
+          # Method verification failing here — a typed PaymentError or an
+          # unexpected error — should be no different: canonical mppx
+          # (createMethodFn) treats it as a retryable 402, not an escaped
+          # exception. Matches the fix already shipped for the same gap in
+          # stripe/mpp-java's Verify.java.
+          return new_challenge.call(credential, e, echo)
         end
         if dispatcher&.has_handlers?(Mpp::Events::PAYMENT_SUCCESS) || method_hook_events&.has_handlers?(Mpp::Events::PAYMENT_SUCCESS)
           emit_payment_success(
