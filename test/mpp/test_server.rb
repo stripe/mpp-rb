@@ -14,6 +14,19 @@ class MockIntent
   end
 end
 
+class ThrowingIntent
+  attr_reader :name
+
+  def initialize(error, name: "charge")
+    @error = error
+    @name = name
+  end
+
+  def verify(_credential, _request)
+    raise @error
+  end
+end
+
 class MockMethod
   attr_reader :name, :intents, :currency, :recipient, :decimals, :chain_id, :fee_payer,
     :on_payment_success
@@ -287,6 +300,104 @@ class TestServerVerify < Minitest::Test
     assert_equal Mpp::Events::CHALLENGE_CREATED, seen[1][0]
     assert_equal result.id, seen[1][1]
     assert_equal Mpp::InvalidChallengeError, seen[1][2]
+  end
+
+  # Regression tests for AGR-2026-089: intent.verify() raising used to
+  # re-raise past verify_or_challenge (via Kernel.raise) instead of returning
+  # a retryable challenge, unlike every other failure path in this function.
+
+  def test_typed_payment_error_from_verify_returns_fresh_challenge
+    request = {"amount" => "1000000"}
+    challenge = Mpp::Challenge.create(
+      secret_key: SECRET,
+      realm: REALM,
+      method: "tempo",
+      intent: "charge",
+      request: request,
+      expires: Mpp::Expires.minutes(5)
+    )
+    credential = Mpp::Credential.new(
+      challenge: challenge.to_echo,
+      payload: {"type" => "hash", "hash" => "0x123"}
+    )
+    intent = ThrowingIntent.new(Mpp::VerificationFailedError.new(reason: "insufficient funds"))
+
+    result = Mpp::Server::Verify.verify_or_challenge(
+      authorization: credential.to_authorization,
+      intent: intent,
+      request: request,
+      realm: REALM,
+      secret_key: SECRET
+    )
+
+    assert_instance_of Mpp::Challenge, result
+    assert_equal REALM, result.realm
+    assert_equal "tempo", result.method
+  end
+
+  def test_unexpected_runtime_error_from_verify_returns_fresh_challenge_not_raised
+    # Deliberately a plain RuntimeError, not a typed PaymentError — an
+    # unexpected internal error during method verification should still
+    # degrade to a fresh challenge rather than escape uncaught, matching
+    # canonical mppx's createMethodFn.
+    request = {"amount" => "1000000"}
+    challenge = Mpp::Challenge.create(
+      secret_key: SECRET,
+      realm: REALM,
+      method: "tempo",
+      intent: "charge",
+      request: request,
+      expires: Mpp::Expires.minutes(5)
+    )
+    credential = Mpp::Credential.new(
+      challenge: challenge.to_echo,
+      payload: {"type" => "hash", "hash" => "0x123"}
+    )
+    intent = ThrowingIntent.new(RuntimeError.new("boom"))
+
+    result = Mpp::Server::Verify.verify_or_challenge(
+      authorization: credential.to_authorization,
+      intent: intent,
+      request: request,
+      realm: REALM,
+      secret_key: SECRET
+    )
+
+    assert_instance_of Mpp::Challenge, result
+  end
+
+  def test_verify_error_emits_payment_failed_exactly_once
+    # The fix routes the failure through new_challenge.call, which already
+    # emits payment_failed internally -- confirm the old manual
+    # emit_payment_failed call was removed rather than left as a duplicate.
+    request = {"amount" => "1000000"}
+    challenge = Mpp::Challenge.create(
+      secret_key: SECRET,
+      realm: REALM,
+      method: "tempo",
+      intent: "charge",
+      request: request,
+      expires: Mpp::Expires.minutes(5)
+    )
+    credential = Mpp::Credential.new(
+      challenge: challenge.to_echo,
+      payload: {"type" => "hash", "hash" => "0x123"}
+    )
+    intent = ThrowingIntent.new(Mpp::VerificationFailedError.new(reason: "declined"))
+    events = Mpp::Events.server_dispatcher
+    failed_count = 0
+    events.on(Mpp::Events::PAYMENT_FAILED) { |_payload| failed_count += 1 }
+
+    Mpp::Server::Verify.verify_or_challenge(
+      authorization: credential.to_authorization,
+      intent: intent,
+      request: request,
+      realm: REALM,
+      secret_key: SECRET,
+      events: events
+    )
+
+    assert_equal 1, failed_count
   end
 
   def test_rejects_expired_challenge
