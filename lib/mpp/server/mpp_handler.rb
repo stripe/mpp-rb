@@ -360,6 +360,9 @@ module Mpp
               retry_challenge: challenge
             )
           end
+          if error.is_a?(Mpp::PaymentError) && error.status != 402
+            raise
+          end
           if error.is_a?(Mpp::ParseError) || error.is_a?(Mpp::VerificationError) || error.is_a?(Mpp::PaymentError)
             if @events.has_handlers?(Mpp::Events::CHALLENGE_CREATED)
               Verify.emit_challenge_created(

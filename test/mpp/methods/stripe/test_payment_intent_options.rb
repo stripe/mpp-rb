@@ -4,6 +4,9 @@ require "test_helper"
 
 class TestPaymentIntentOptions < Minitest::Test
   TEMPO_ADDRESS = "0x#{"1" * 40}"
+  BASE_ADDRESS = "0x#{"2" * 40}"
+  BASE_PAYER = "0x#{"3" * 40}"
+  PAID_URL = "https://api.example.com/paid"
 
   class FakePaymentIntents
     attr_reader :calls
@@ -238,6 +241,52 @@ class TestPaymentIntentOptions < Minitest::Test
       server.charge(credential.to_authorization, "0.01", payment_intent_options: resolver)
     end
     assert_equal 0, intent.broadcasts
+    assert_empty client.payment_intents.calls
+  end
+
+  def test_base_x402_resolver_bad_request_is_not_converted_to_a_challenge
+    client = FakeStripeClient.new
+    payments = Mpp::Methods::Stripe.create(
+      network_id: "network_123",
+      livemode: false,
+      client: client,
+      deposit_addresses: {base: BASE_ADDRESS}
+    )
+    method = payments.base.charge(x402: {facilitator: "https://x402.example/facilitator"})
+    server = server_for(method)
+    resolver = ->(**) { raise Mpp::BadRequestError.new(reason: "invalid tax location") }
+    challenge = server.charge(nil, "0.01", payment_intent_options: resolver)
+    requirements = Mpp::X402::Server.to_payment_requirements(
+      challenge.request,
+      authorization: method.authorization,
+      max_timeout_seconds: 300
+    )
+    payload = {
+      "accepted" => requirements,
+      "payload" => {
+        "authorization" => {
+          "from" => BASE_PAYER,
+          "nonce" => "0x#{"11" * 32}",
+          "to" => BASE_ADDRESS,
+          "validAfter" => "0",
+          "validBefore" => (Time.now.to_i + 600).to_s,
+          "value" => challenge.request.fetch("amount")
+        },
+        "signature" => "0x#{"22" * 65}"
+      },
+      "resource" => {"url" => PAID_URL},
+      "x402Version" => 2
+    }
+
+    assert_raises(Mpp::BadRequestError) do
+      server.charge(
+        nil,
+        "0.01",
+        payment_signature: Mpp::X402::Header.encode_payment_signature(payload),
+        payment_intent_options: resolver,
+        url: PAID_URL
+      )
+    end
     assert_empty client.payment_intents.calls
   end
 
