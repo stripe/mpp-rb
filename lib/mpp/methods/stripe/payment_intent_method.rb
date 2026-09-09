@@ -17,7 +17,7 @@ module Mpp
           options_input = input[:payment_intent_options]
           PaymentIntentOptions.validate_input(options_input)
           sanitized = input.except(:payment_intent_options)
-          decorated = PaymentIntentIntent.new(
+          decorated = WrappedIntent.new(
             intent: intent,
             options_input: options_input,
             client: @client,
@@ -36,42 +36,42 @@ module Mpp
         def respond_to_missing?(name, include_private = false)
           @method.respond_to?(name, include_private) || super
         end
-      end
 
-      # Per-attempt intent view retaining resolved input outside protocol state.
-      class PaymentIntentIntent
-        attr_reader :name
+        # Per-attempt intent view retaining resolved input outside protocol state.
+        class WrappedIntent
+          attr_reader :name
 
-        def initialize(intent:, options_input:, client:, network:, metadata:)
-          @intent = intent
-          @name = intent.name
-          @options_input = options_input
-          @client = client
-          @network = network
-          @metadata = metadata
-        end
-
-        def verify(credential, request)
-          challenge = PaymentIntentOptions.challenge_view(credential.challenge, request)
-          resolve_options = lambda do
-            PaymentIntentOptions.resolve(
-              @options_input,
-              challenge: challenge,
-              credential: credential,
-              request: request
-            )
+          def initialize(intent:, options_input:, client:, network:, metadata:)
+            @intent = intent
+            @name = intent.name
+            @options_input = options_input
+            @client = client
+            @network = network
+            @metadata = metadata
           end
 
-          resolved_options = resolve_options.call
-          receipt = @intent.verify(credential, request)
+          def verify(credential, request)
+            challenge = PaymentIntentOptions.challenge_view(credential.challenge, request)
+            resolve_options = lambda do
+              PaymentIntentOptions.resolve(
+                @options_input,
+                challenge: challenge,
+                credential: credential,
+                request: request
+              )
+            end
 
-          CryptoPaymentRecorder.new(client: @client, network: @network, metadata: @metadata).call(
-            challenge: challenge,
-            receipt: receipt,
-            request: request,
-            payment_intent_options: resolved_options
-          )
-          receipt
+            resolved_options = resolve_options.call
+            receipt = @intent.verify(credential, request)
+
+            CryptoPaymentRecorder.new(client: @client, network: @network, metadata: @metadata).call(
+              challenge: challenge,
+              receipt: receipt,
+              request: request,
+              payment_intent_options: resolved_options
+            )
+            receipt
+          end
         end
       end
     end
