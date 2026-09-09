@@ -25,21 +25,6 @@ module Mpp
           validate(value)
         end
 
-        def challenge_view(echo, request)
-          Mpp::Challenge.new(
-            id: echo.id,
-            method: echo.method,
-            intent: echo.intent,
-            request: request,
-            realm: echo.realm,
-            request_b64: echo.request,
-            digest: echo.digest,
-            expires: echo.expires,
-            opaque: echo.opaque,
-            header: echo.header
-          )
-        end
-
         def validate(value)
           raise ArgumentError, "payment_intent_options must be a Hash or callable" unless value.is_a?(Hash)
 

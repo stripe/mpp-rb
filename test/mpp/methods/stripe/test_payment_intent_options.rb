@@ -154,10 +154,10 @@ class TestPaymentIntentOptions < Minitest::Test
     server.charge(valid.to_authorization, "0.50", payment_intent_options: resolver)
     assert_equal 1, calls.length
     resolved_challenge, resolved_credential, resolved_request = calls.first
-    assert_instance_of Mpp::Challenge, resolved_challenge
+    assert_instance_of Mpp::ChallengeEcho, resolved_challenge
     assert_equal valid, resolved_credential
     assert_equal challenge.request, resolved_request
-    assert_equal challenge.request, resolved_challenge.request
+    assert_equal challenge.to_echo, resolved_challenge
   end
 
   def test_spt_resolver_bad_request_prevents_payment_intent_creation
@@ -194,7 +194,7 @@ class TestPaymentIntentOptions < Minitest::Test
       order << :resolve
       assert_equal "tempo", challenge.method
       refute_nil credential.payload["valid"]
-      assert_equal challenge.request, request
+      assert_equal Mpp::Parsing.b64_decode(challenge.request), request
       full_options
     end
 

@@ -63,10 +63,9 @@ module Mpp
             raise Mpp::VerificationError, "Invalid or missing methodDetails.paymentMethodTypes"
           end
 
-          challenge = PaymentIntentOptions.challenge_view(credential.challenge, request)
           payment_intent_options = PaymentIntentOptions.resolve(
             @payment_intent_options,
-            challenge: challenge,
+            challenge: credential.challenge,
             credential: credential,
             request: request
           ) || {}

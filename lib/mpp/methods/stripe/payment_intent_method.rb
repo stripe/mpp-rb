@@ -51,21 +51,16 @@ module Mpp
           end
 
           def verify(credential, request)
-            challenge = PaymentIntentOptions.challenge_view(credential.challenge, request)
-            resolve_options = lambda do
-              PaymentIntentOptions.resolve(
-                @options_input,
-                challenge: challenge,
-                credential: credential,
-                request: request
-              )
-            end
-
-            resolved_options = resolve_options.call
+            resolved_options = PaymentIntentOptions.resolve(
+              @options_input,
+              challenge: credential.challenge,
+              credential: credential,
+              request: request
+            )
             receipt = @intent.verify(credential, request)
 
             CryptoPaymentRecorder.new(client: @client, network: @network, metadata: @metadata).call(
-              challenge: challenge,
+              challenge: credential.challenge,
               receipt: receipt,
               request: request,
               payment_intent_options: resolved_options
