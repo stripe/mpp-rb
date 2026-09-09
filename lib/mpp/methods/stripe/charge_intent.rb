@@ -11,11 +11,22 @@ module Mpp
       class ChargeIntent
         attr_reader :name
 
-        def initialize(secret_key:, api_base: Defaults::STRIPE_API_BASE, client: nil)
+        def initialize(secret_key:, api_base: Defaults::STRIPE_API_BASE, client: nil,
+          payment_intent_options: nil)
           @name = "charge"
           @secret_key = secret_key
           @api_base = api_base
           @client = client
+          @payment_intent_options = payment_intent_options
+        end
+
+        def with_payment_intent_options(payment_intent_options)
+          self.class.new(
+            secret_key: @secret_key,
+            api_base: @api_base,
+            client: @client,
+            payment_intent_options: payment_intent_options
+          )
         end
 
         def verify(credential, request)
@@ -27,11 +38,11 @@ module Mpp
           end
 
           payload_data = credential.payload
-          unless payload_data.is_a?(Hash) && payload_data.key?("spt")
-            raise Mpp::VerificationError, "Invalid credential payload: missing spt"
+          spt = payload_data["spt"] if payload_data.is_a?(Hash)
+          unless spt.is_a?(String) && !spt.empty?
+            raise Mpp::VerificationError, "Invalid credential payload: missing or invalid spt"
           end
 
-          spt = payload_data["spt"]
           credential_external_id = payload_data["externalId"]
           request_external_id = request["externalId"]
           if !request_external_id.nil? && credential_external_id != request_external_id
@@ -52,8 +63,13 @@ module Mpp
             raise Mpp::VerificationError, "Invalid or missing methodDetails.paymentMethodTypes"
           end
 
-          payment_intent_options = block_given? ? yield : nil
-          payment_intent_options ||= {}
+          challenge = PaymentIntentOptions.challenge_view(credential.challenge, request)
+          payment_intent_options = PaymentIntentOptions.resolve(
+            @payment_intent_options,
+            challenge: challenge,
+            credential: credential,
+            request: request
+          ) || {}
 
           # Build PaymentIntent params
           params = {

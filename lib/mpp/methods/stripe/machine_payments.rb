@@ -69,7 +69,7 @@ module Mpp
             can_offer: MachinePayments.minimum_amount(MachinePayments::SPT_MINIMUM_MINOR_UNITS)
           )
           method.intents = {"charge" => Mpp::Methods::Stripe::ChargeIntent.new(secret_key: nil, client: @client)}
-          PaymentIntentMethod.new(method: method)
+          method
         end
       end
 

@@ -4,9 +4,9 @@
 module Mpp
   module Methods
     module Stripe
-      # Decorates a machine-payment method with private, request-scoped Stripe input.
+      # Decorates a crypto method with private, request-scoped Stripe input.
       class PaymentIntentMethod
-        def initialize(method:, client: nil, network: nil, metadata: nil)
+        def initialize(method:, client:, network:, metadata: nil)
           @method = method
           @client = client
           @network = network
@@ -62,21 +62,15 @@ module Mpp
             )
           end
 
-          resolved_options = @network ? resolve_options.call : nil
-          receipt = if @network
-            @intent.verify(credential, request)
-          else
-            @intent.verify(credential, request, &resolve_options)
-          end
+          resolved_options = resolve_options.call
+          receipt = @intent.verify(credential, request)
 
-          if @network
-            CryptoPaymentRecorder.new(client: @client, network: @network, metadata: @metadata).call(
-              challenge: challenge,
-              receipt: receipt,
-              request: request,
-              payment_intent_options: resolved_options
-            )
-          end
+          CryptoPaymentRecorder.new(client: @client, network: @network, metadata: @metadata).call(
+            challenge: challenge,
+            receipt: receipt,
+            request: request,
+            payment_intent_options: resolved_options
+          )
           receipt
         end
       end

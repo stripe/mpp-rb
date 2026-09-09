@@ -131,9 +131,11 @@ class TestPaymentIntentOptions < Minitest::Test
     server.charge(forged.to_authorization, "0.50", payment_intent_options: resolver)
     assert_empty calls
 
-    invalid = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"not_spt" => true})
-    assert_raises(Mpp::VerificationError) do
-      server.charge(invalid.to_authorization, "0.50", payment_intent_options: resolver)
+    [{"not_spt" => true}, {"spt" => nil}, {"spt" => {}}, {"spt" => ""}].each do |payload|
+      invalid = Mpp::Credential.new(challenge: challenge.to_echo, payload: payload)
+      assert_raises(Mpp::VerificationError) do
+        server.charge(invalid.to_authorization, "0.50", payment_intent_options: resolver)
+      end
     end
     assert_empty calls
 
