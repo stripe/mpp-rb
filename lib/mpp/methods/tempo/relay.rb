@@ -99,6 +99,7 @@ module Mpp
         def verify(credential, _request = nil)
           input = to_relay_input(credential)
           validate(input)
+          yield if block_given?
           broadcast(input)
         end
 

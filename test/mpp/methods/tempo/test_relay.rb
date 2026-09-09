@@ -225,6 +225,25 @@ class TestTempoRelay < Minitest::Test
     assert_not_requested :post, /rpc/
   end
 
+  def test_terminal_callback_runs_after_validation_and_before_broadcast
+    order = []
+    relay = Mpp::Methods::Tempo::Relay.new("https://api.tempo.example")
+    stub_request(:post, "https://api.tempo.example/v1/mpp/validate")
+      .to_return do
+        order << :validate
+        {status: 200, body: {success: true}.to_json}
+      end
+    stub_request(:post, "https://api.tempo.example/v1/mpp/broadcast")
+      .to_return do
+        order << :broadcast
+        {status: 200, body: @receipt_body.to_json}
+      end
+
+    relay.verify(@credential, {}) { order << :resolve }
+
+    assert_equal [:validate, :resolve, :broadcast], order
+  end
+
   DuckRelay = Struct.new(:calls) do
     def initialize
       super([])

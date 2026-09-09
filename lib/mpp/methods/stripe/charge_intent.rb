@@ -52,6 +52,9 @@ module Mpp
             raise Mpp::VerificationError, "Invalid or missing methodDetails.paymentMethodTypes"
           end
 
+          payment_intent_options = block_given? ? yield : nil
+          payment_intent_options ||= {}
+
           # Build PaymentIntent params
           params = {
             amount: Integer(request["amount"]),
@@ -61,8 +64,14 @@ module Mpp
             payment_method_types: payment_method_types
           }
 
+          params[:customer] = payment_intent_options[:customer] if payment_intent_options.key?(:customer)
+          params[:hooks] = payment_intent_options[:hooks] if payment_intent_options.key?(:hooks)
+          params[:receipt_email] = payment_intent_options[:receipt_email] if payment_intent_options.key?(:receipt_email)
+
           metadata = method_details["metadata"].is_a?(Hash) ? method_details["metadata"].transform_values(&:to_s) : {}
-          params[:metadata] = metadata.merge("machine_payment" => "true")
+          params[:metadata] = AnalyticsMetadata.build(credential.challenge)
+            .merge(metadata)
+            .merge(payment_intent_options.fetch(:metadata, {}))
 
           unless @client
             begin

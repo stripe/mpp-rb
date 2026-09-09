@@ -86,7 +86,7 @@ module Mpp
         )
 
         method.intents = {"charge" => charge_intent}
-        method
+        PaymentIntentMethod.new(method: method)
       end
     end
   end

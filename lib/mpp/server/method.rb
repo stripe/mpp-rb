@@ -24,6 +24,20 @@ module Mpp
         end
       end
 
+      # Give a method a chance to create a request-scoped intent view and to
+      # remove private server input before the canonical request is built.
+      sig { params(method: T.untyped, intent: T.untyped, input: T::Hash[Symbol, T.untyped]).returns([T.untyped, T::Hash[Symbol, T.untyped]]) }
+      def prepare_intent(method, intent, input)
+        return [intent, input] unless method.respond_to?(:prepare_intent)
+
+        prepared = method.prepare_intent(intent, input)
+        unless prepared.is_a?(Array) && prepared.length == 2 && prepared[1].is_a?(Hash)
+          Kernel.raise ArgumentError, "prepare_intent must return [intent, request_input]"
+        end
+
+        [prepared[0], prepared[1]]
+      end
+
       # Check whether a method should be advertised for a canonical request.
       # This only governs composing new 402 offers, never credential redemption.
       sig { params(method: T.untyped, request: T::Hash[String, T.untyped]).returns(T::Boolean) }

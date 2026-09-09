@@ -69,7 +69,7 @@ module Mpp
             can_offer: MachinePayments.minimum_amount(MachinePayments::SPT_MINIMUM_MINOR_UNITS)
           )
           method.intents = {"charge" => Mpp::Methods::Stripe::ChargeIntent.new(secret_key: nil, client: @client)}
-          method
+          PaymentIntentMethod.new(method: method)
         end
       end
 
@@ -90,16 +90,15 @@ module Mpp
 
           chain_id = @livemode ? Mpp::Methods::Tempo::Defaults::CHAIN_ID : Mpp::Methods::Tempo::Defaults::TESTNET_CHAIN_ID
           currency = @livemode ? Mpp::Methods::Tempo::Defaults::USDC : Mpp::Methods::Tempo::Defaults::PATH_USD
-          recorder = CryptoPaymentRecorder.new(client: @client, network: "tempo", metadata: @metadata)
-          Mpp::Methods::Tempo.tempo(
+          method = Mpp::Methods::Tempo.tempo(
             intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new(chain_id: chain_id)},
             chain_id: chain_id,
             currency: currency,
             recipient: @recipient,
             decimals: Mpp::Methods::Tempo::Defaults::PATH_USD_DECIMALS,
-            can_offer: MachinePayments.minimum_amount(CryptoPaymentRecorder::RAW_UNITS_PER_CENT),
-            on_payment_success: ->(payload) { recorder.call(payload) }
+            can_offer: MachinePayments.minimum_amount(CryptoPaymentRecorder::RAW_UNITS_PER_CENT)
           )
+          PaymentIntentMethod.new(method: method, client: @client, network: "tempo", metadata: @metadata)
         end
       end
 
@@ -115,14 +114,13 @@ module Mpp
           raise ArgumentError, "deposit_addresses[:base] is required for Base payments" if @recipient.nil?
 
           currency = @livemode ? Mpp::Methods::Evm::Assets::BASE_USDC : Mpp::Methods::Evm::Assets::BASE_SEPOLIA_USDC
-          recorder = CryptoPaymentRecorder.new(client: @client, network: "base", metadata: @metadata)
-          Mpp::Methods::Evm.charge(
+          method = Mpp::Methods::Evm.charge(
             currency: currency,
             recipient: @recipient,
             x402: x402,
-            can_offer: MachinePayments.minimum_amount(CryptoPaymentRecorder::RAW_UNITS_PER_CENT),
-            on_payment_success: ->(payload) { recorder.call(payload) }
+            can_offer: MachinePayments.minimum_amount(CryptoPaymentRecorder::RAW_UNITS_PER_CENT)
           )
+          PaymentIntentMethod.new(method: method, client: @client, network: "base", metadata: @metadata)
         end
       end
     end

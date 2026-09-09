@@ -192,6 +192,30 @@ class TestTempoChargeIntent < Minitest::Test
     assert_equal 1, methods.count("eth_getTransactionReceipt")
   end
 
+  def test_terminal_callback_failure_prevents_transaction_broadcast
+    raw_tx = "0xabcdef1234567890"
+    tx_hash = raw_transaction_hash(raw_tx)
+    store = Mpp::MemoryStore.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    credential = transaction_credential(raw_tx, challenge_id: "challenge-123")
+    broadcasts = 0
+
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, method, _params) {
+      broadcasts += 1 if method == "eth_sendRawTransaction"
+      raise "unexpected RPC call: #{method}"
+    }) do
+      error = assert_raises(Mpp::BadRequestError) do
+        intent.verify(credential, request_hash) do
+          raise Mpp::BadRequestError.new(reason: "invalid tax location")
+        end
+      end
+      assert_match(/invalid tax location/, error.message)
+    end
+
+    assert_equal 0, broadcasts
+    assert_nil store.get("mpp:charge:#{tx_hash.downcase}")
+  end
+
   def test_default_store_rejects_transaction_replay
     raw_tx = "0xabcdef1234567890"
     tx_hash = raw_transaction_hash(raw_tx)

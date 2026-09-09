@@ -65,7 +65,8 @@ module Mpp
             raise Mpp::VerificationFailedError.new(reason: "EVM authorization source mismatch")
           end
 
-          settled = settle(payload, request)
+          before_terminal = block_given? ? proc { yield } : nil
+          settled = settle(payload, request, &before_terminal)
           Mpp::Receipt.success(settled.fetch("transaction"), method: "evm")
         end
 
@@ -103,6 +104,8 @@ module Mpp
               reason: verified["invalidMessage"] || verified["invalidReason"] || "EVM facilitator verify failed"
             )
           end
+
+          yield if block_given?
 
           settled = @facilitator.settle(payment_payload, requirements)
           unless settled["success"]

@@ -106,14 +106,10 @@ class TestMachinePayments < Minitest::Test
 
   def test_tempo_and_base_record_verified_payments
     client = FakeStripeClient.new
-    payments = machine_payments(
-      client: client,
-      deposit_addresses: {tempo: TEMPO_ADDRESS, base: BASE_ADDRESS},
-      metadata: {"order" => 123}
-    )
-
-    payments.tempo.charge.on_payment_success.call(success_payload("0xtempo"))
-    payments.base.charge(x402: facilitator).on_payment_success.call(success_payload("0xbase"))
+    Mpp::Methods::Stripe::CryptoPaymentRecorder.new(client: client, network: "tempo", metadata: {"order" => 123})
+      .call(success_payload("0xtempo"))
+    Mpp::Methods::Stripe::CryptoPaymentRecorder.new(client: client, network: "base", metadata: {"order" => 123})
+      .call(success_payload("0xbase"))
 
     tempo_params, tempo_options = client.payment_intents.calls.fetch(0)
     base_params, base_options = client.payment_intents.calls.fetch(1)
@@ -122,8 +118,15 @@ class TestMachinePayments < Minitest::Test
     assert_equal "base", base_params.dig(:payment_method_options, :crypto, :transaction_verification_options, :network)
     assert_equal "0xtempo", tempo_options[:idempotency_key]
     assert_equal "0xbase", base_options[:idempotency_key]
-    assert_equal({"machine_payment" => "true", "order" => "123"}, tempo_params[:metadata])
-    assert_equal({"machine_payment" => "true", "order" => "123"}, base_params[:metadata])
+    expected_metadata = {
+      "machine_payment" => "true",
+      "mpp_sdk" => "mpp-rb/#{Mpp::VERSION}",
+      "mpp_challenge_id" => "challenge_123",
+      "mpp_intent" => "charge",
+      "order" => "123"
+    }
+    assert_equal expected_metadata, tempo_params[:metadata]
+    assert_equal expected_metadata, base_params[:metadata]
     assert_equal Mpp::Methods::Stripe::Defaults::MACHINE_PAYMENTS_API_VERSION, tempo_options[:stripe_version]
   end
 
@@ -139,7 +142,13 @@ class TestMachinePayments < Minitest::Test
     params, = client.payment_intents.calls.first
     assert_equal "spt_test", params[:shared_payment_granted_token]
     assert_equal ["card", "link"], params[:payment_method_types]
-    assert_equal({"machine_payment" => "true", "order" => "123"}, params[:metadata])
+    assert_equal({
+      "machine_payment" => "true",
+      "mpp_sdk" => "mpp-rb/#{Mpp::VERSION}",
+      "mpp_challenge_id" => challenge.id,
+      "mpp_intent" => "charge",
+      "order" => "123"
+    }, params[:metadata])
   end
 
   def test_crypto_recorder_rounds_before_applying_the_one_cent_minimum
@@ -193,7 +202,14 @@ class TestMachinePayments < Minitest::Test
   end
 
   def success_payload(reference, amount: 10_000)
-    {receipt: Mpp::Receipt.success(reference, method: "evm"), request: {"amount" => amount.to_s}}
+    challenge = Mpp::Challenge.new(
+      id: "challenge_123",
+      method: "tempo",
+      intent: "charge",
+      request: {"amount" => amount.to_s},
+      realm: "api.example.com"
+    )
+    {challenge: challenge, receipt: Mpp::Receipt.success(reference, method: "evm"), request: {"amount" => amount.to_s}}
   end
 
   def machine_payments(livemode: false, client: FakeStripeClient.new, deposit_addresses: nil, metadata: nil)

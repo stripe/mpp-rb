@@ -176,6 +176,7 @@ module Mpp
         url = kwargs[:url]
         payment_signature = kwargs[:payment_signature]
         offer_opts = kwargs.except(*REQUEST_OPTION_KEYS)
+        intent, offer_opts = Mpp::Server::MethodHelper.prepare_intent(method, intent, offer_opts)
         request = build_charge_request(method, amount, **offer_opts)
         return nil if request_guard && !request_guard.call(request)
 

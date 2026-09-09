@@ -55,7 +55,7 @@ module Mpp
             raise Mpp::VerificationError, "Request has expired" if expires < Time.now.utc
           end
 
-          return relay.verify(credential, request) if relay
+          return relay.verify(credential, request) { yield if block_given? } if relay
 
           payload_data = credential.payload
           unless payload_data.is_a?(Hash) && payload_data.key?("type")
@@ -66,17 +66,17 @@ module Mpp
           case payload_data["type"]
           when "hash"
             payload = Schemas::HashCredentialPayload.new(type: "hash", hash: payload_data["hash"])
-            verify_hash(payload, req, credential: credential)
+            verify_hash(payload, req, credential: credential) { yield if block_given? }
           when "transaction"
             payload = Schemas::TransactionCredentialPayload.new(
               type: "transaction", signature: payload_data["signature"]
             )
-            verify_transaction(payload, req, credential: credential)
+            verify_transaction(payload, req, credential: credential) { yield if block_given? }
           when "proof"
             payload = Schemas::ProofCredentialPayload.new(
               type: "proof", signature: payload_data["signature"]
             )
-            verify_proof(payload, req, credential: credential)
+            verify_proof(payload, req, credential: credential) { yield if block_given? }
           else
             raise Mpp::VerificationError, "Invalid credential type: #{payload_data["type"]}"
           end
@@ -135,6 +135,13 @@ module Mpp
           end
           assert_challenge_bound_memo(matched_logs, credential.challenge) unless request.method_details.memo
 
+          begin
+            yield if block_given?
+          rescue
+            @store.delete(store_key)
+            raise
+          end
+
           Mpp::Receipt.success(payload.hash)
         end
 
@@ -165,6 +172,7 @@ module Mpp
 
             receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
             verify_transaction_receipt!(receipt_data, request, credential: credential)
+            yield if block_given?
             @store.put(store_key, TRANSACTION_VERIFIED)
             return Mpp::Receipt.success(reserved_tx_hash)
           end
@@ -173,6 +181,7 @@ module Mpp
           # would revert. Fails closed: no simulation, no broadcast.
           begin
             simulate_before_broadcast(simulate_payload, rpc_url) if simulate_payload
+            yield if block_given?
           rescue
             @store.delete(store_key)
             raise
@@ -468,6 +477,8 @@ module Mpp
             signature: payload.signature
           )
           raise Mpp::VerificationError, "Proof signature does not match source" unless valid
+
+          yield if block_given?
 
           store_key = "mpp:proof:#{credential.challenge.id}"
           raise Mpp::VerificationError, "Proof credential has already been used" unless @store.put_if_absent(store_key, true)
