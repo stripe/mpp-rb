@@ -86,13 +86,14 @@ class TestPaymentIntentOptions < Minitest::Test
     method = machine_payments(client: client, metadata: {"configured" => "yes"}).spt.charge
     server = server_for(method)
     options = full_options.merge(amount: 999, currency: "eur", confirm: false)
+    payment = server.compose([method, {amount: "0.50", payment_intent_options: options}])
 
-    challenge = server.charge(nil, "0.50", payment_intent_options: options)
+    challenge = payment.call.challenges.fetch(0)
     refute challenge.request.key?("payment_intent_options")
     refute challenge.request.key?("paymentIntentOptions")
 
     credential = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"spt" => "spt_123"})
-    server.charge(credential.to_authorization, "0.50", payment_intent_options: options)
+    payment.call(authorization: credential.to_authorization)
 
     params, request_options = client.payment_intents.calls.fetch(0)
     assert_equal 50, params[:amount]
@@ -171,7 +172,16 @@ class TestPaymentIntentOptions < Minitest::Test
     assert_empty client.payment_intents.calls
   end
 
-  def test_crypto_resolves_before_broadcast_and_records_options
+  def test_each_attempt_gets_an_isolated_intent_view
+    method = machine_payments(client: FakeStripeClient.new).spt.charge
+    underlying = method.intents.fetch("charge")
+    first, = method.prepare_intent(underlying, {payment_intent_options: {customer: "cus_first"}})
+    second, = method.prepare_intent(underlying, {payment_intent_options: {customer: "cus_second"}})
+
+    refute_same first, second
+  end
+
+  def test_crypto_resolves_before_verify_and_records_options
     order = []
     client = FakeStripeClient.new { order << :payment_intent }
     method = machine_payments(client: client, metadata: {"configured" => "yes"}, tempo: true).tempo.charge
@@ -181,18 +191,24 @@ class TestPaymentIntentOptions < Minitest::Test
     resolver = lambda do |challenge:, credential:, request:|
       order << :resolve
       assert_equal "tempo", challenge.method
-      assert credential.payload["valid"]
+      refute_nil credential.payload["valid"]
       assert_equal challenge.request, request
       full_options
     end
 
     challenge = server.charge(nil, "0.01", payment_intent_options: resolver)
     assert_empty order
+    forged_echo = Mpp::ChallengeEcho.new(**challenge.to_echo.to_h.merge(id: "forged"))
+    forged = Mpp::Credential.new(challenge: forged_echo, payload: {"valid" => true})
+    server.charge(forged.to_authorization, "0.01", payment_intent_options: resolver)
+    assert_empty order
+
     invalid = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"valid" => false})
     assert_raises(Mpp::VerificationError) do
       server.charge(invalid.to_authorization, "0.01", payment_intent_options: resolver)
     end
-    assert_empty order
+    assert_equal [:resolve], order
+    order.clear
 
     valid = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"valid" => true})
     server.charge(valid.to_authorization, "0.01", payment_intent_options: resolver)
@@ -227,7 +243,7 @@ class TestPaymentIntentOptions < Minitest::Test
     definitive = Class.new(StandardError) { def type = "StripeInvalidRequestError" }.new("invalid customer")
     client = FakeStripeClient.new
     client.payment_intents.results = [definitive, Struct.new(:id, :status).new("pi_fallback", "succeeded")]
-    recorder(client).call(recorder_payload(payment_intent_options: full_options, has_payment_intent_options: true))
+    recorder(client).call(recorder_payload(payment_intent_options: full_options))
 
     assert_equal 2, client.payment_intents.calls.length
     fallback_params, fallback_options = client.payment_intents.calls.fetch(1)
@@ -239,8 +255,19 @@ class TestPaymentIntentOptions < Minitest::Test
 
     ambiguous_client = FakeStripeClient.new
     ambiguous_client.payment_intents.results = [StandardError.new("connection reset")]
-    recorder(ambiguous_client).call(recorder_payload(payment_intent_options: full_options, has_payment_intent_options: true))
+    recorder(ambiguous_client).call(recorder_payload(payment_intent_options: full_options))
     assert_equal 1, ambiguous_client.payment_intents.calls.length
+  end
+
+  def test_crypto_recording_does_not_fallback_without_resolved_optional_fields
+    definitive = Class.new(StandardError) { def type = "StripeInvalidRequestError" }.new("invalid crypto parameters")
+
+    [{}, nil].each do |options|
+      client = FakeStripeClient.new
+      client.payment_intents.results = [definitive]
+      recorder(client).call(recorder_payload(payment_intent_options: options))
+      assert_equal 1, client.payment_intents.calls.length
+    end
   end
 
   def test_analytics_metadata_limits_generated_values_to_500_characters

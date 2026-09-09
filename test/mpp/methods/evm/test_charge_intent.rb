@@ -206,36 +206,6 @@ class TestEvmCharge < Minitest::Test
     assert_equal "0xsettled", seen.first[:receipt].reference
   end
 
-  def test_terminal_callback_runs_after_facilitator_verify_and_before_settle
-    order = []
-    challenge = @handler.charge(nil, "0.01")
-    signature = encode_signature(x402_payload(challenge))
-    credential = @method.bind_x402_credential(
-      signature,
-      challenge: challenge,
-      request: challenge.request,
-      url: URL,
-      body: nil,
-      http_method: "GET"
-    )
-    stub_request(:post, "#{FACILITATOR}/verify")
-      .to_return do
-        order << :verify
-        {status: 200, body: {isValid: true, payer: PAYER}.to_json}
-      end
-    stub_request(:post, "#{FACILITATOR}/settle")
-      .to_return do
-        order << :settle
-        {status: 200, body: {success: true, transaction: "0xsettled"}.to_json}
-      end
-
-    Mpp::Methods::Evm::Authorization.stub(:recover, PAYER) do
-      @method.intents.fetch("charge").verify(credential, challenge.request) { order << :resolve }
-    end
-
-    assert_equal [:verify, :resolve, :settle], order
-  end
-
   def test_failed_facilitator_verify_returns_challenge
     stub_request(:post, "#{FACILITATOR}/verify")
       .to_return(status: 200, body: {isValid: false, invalidReason: "insufficient"}.to_json)

@@ -14,14 +14,12 @@ module Mpp
         end
 
         def prepare_intent(intent, input)
-          has_options = input.key?(:payment_intent_options)
           options_input = input[:payment_intent_options]
           PaymentIntentOptions.validate_input(options_input)
           sanitized = input.except(:payment_intent_options)
           decorated = PaymentIntentIntent.new(
             intent: intent,
             options_input: options_input,
-            has_options: has_options,
             client: @client,
             network: @network,
             metadata: @metadata
@@ -44,11 +42,10 @@ module Mpp
       class PaymentIntentIntent
         attr_reader :name
 
-        def initialize(intent:, options_input:, has_options:, client:, network:, metadata:)
+        def initialize(intent:, options_input:, client:, network:, metadata:)
           @intent = intent
           @name = intent.name
           @options_input = options_input
-          @has_options = has_options
           @client = client
           @network = network
           @metadata = metadata
@@ -56,9 +53,8 @@ module Mpp
 
         def verify(credential, request)
           challenge = PaymentIntentOptions.challenge_view(credential.challenge, request)
-          resolved_options = nil
-          receipt = @intent.verify(credential, request) do
-            resolved_options = PaymentIntentOptions.resolve(
+          resolve_options = lambda do
+            PaymentIntentOptions.resolve(
               @options_input,
               challenge: challenge,
               credential: credential,
@@ -66,13 +62,19 @@ module Mpp
             )
           end
 
+          resolved_options = @network ? resolve_options.call : nil
+          receipt = if @network
+            @intent.verify(credential, request)
+          else
+            @intent.verify(credential, request, &resolve_options)
+          end
+
           if @network
             CryptoPaymentRecorder.new(client: @client, network: @network, metadata: @metadata).call(
               challenge: challenge,
               receipt: receipt,
               request: request,
-              payment_intent_options: resolved_options,
-              has_payment_intent_options: @has_options
+              payment_intent_options: resolved_options
             )
           end
           receipt

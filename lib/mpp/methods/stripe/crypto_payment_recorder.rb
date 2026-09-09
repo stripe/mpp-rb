@@ -45,7 +45,9 @@ module Mpp
           params[:hooks] = options[:hooks] if options.key?(:hooks)
           params[:receipt_email] = options[:receipt_email] if options.key?(:receipt_email)
           params[:metadata] = analytics.merge(optional_metadata)
-          has_optional_params = payload[:has_payment_intent_options] || !optional_metadata.empty?
+          has_optional_params = !optional_metadata.empty? || [:customer, :hooks, :receipt_email].any? do |key|
+            options.key?(key)
+          end
 
           create(params, reference)
         rescue => error
