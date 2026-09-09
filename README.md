@@ -154,11 +154,6 @@ challenge is accepted and immediately before the rail's verification operation.
 The options are not serialized in the MPP challenge. Recorded crypto payments
 retry once without optional fields only when Stripe definitively rejects them.
 
-This follows mppx's method boundary: the dedicated Stripe SPT charge intent owns
-and resolves `payment_intent_options` directly. The request-scoped method
-decorator is used only for crypto rails, whose underlying implementations remain
-unaware of Stripe and PaymentIntent options.
-
 `evm.charge` additionally emits `PAYMENT-REQUIRED` and accepts `PAYMENT-SIGNATURE` (x402 v2 exact) when a facilitator is configured:
 
 ```ruby
