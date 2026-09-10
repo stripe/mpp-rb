@@ -151,7 +151,7 @@ payment = server.compose(
 For SPT, deferred callables run after credential validation and immediately
 before PaymentIntent creation. For crypto, they run after the rail's `validate`
 and immediately before `broadcast` when supported, or before legacy `verify`
-otherwise. Tempo and Base currently use the legacy path.
+otherwise. Tempo and Base both support the split path, including relay and x402.
 The options are not serialized in the MPP challenge. Recorded crypto payments
 retry once without optional fields only when Stripe definitively rejects them.
 
@@ -165,6 +165,21 @@ Use an empty hash for `details` when none are available; `source` defaults to
 issuance. Broadcast receives
 the original inputs and returns a receipt; the combined lifecycle does not pass
 the validation record into broadcast.
+
+Tempo and EVM charge intents expose `validate(credential, request)` and
+`broadcast(credential, request)` using this contract. Validation does not submit
+payments, co-sign transactions, or consume replay state. `verify` is deprecated
+and calls both phases in order.
+Like [mppx](https://github.com/wevm/mppx/tree/43ec92c36f575339cf7c45ae466507048783a0d3/src),
+local Tempo broadcast repeats credential checks, while EVM and relay broadcast
+delegate to settlement without repeating the remote validation call. Validation
+is a preflight check, not a guarantee that settlement will succeed.
+
+Local Tempo transaction preflight requires the `eth` and `rlp` gems and an RPC
+supporting `eth_call`. It supports ECDSA sender signatures and rejects unsupported
+transaction authorizations instead of skipping their validation. Relay-backed
+validation is delegated to the relay. Pending local submissions retain
+receipt-based retry recovery without re-simulating an already-submitted payment.
 
 `evm.charge` additionally emits `PAYMENT-REQUIRED` and accepts `PAYMENT-SIGNATURE` (x402 v2 exact) when a facilitator is configured:
 

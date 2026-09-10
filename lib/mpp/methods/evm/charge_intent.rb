@@ -18,7 +18,13 @@ module Mpp
           @route_binding = route_binding
         end
 
+        # @deprecated Use #validate followed by #broadcast.
         def verify(credential, request)
+          validate(credential, request)
+          broadcast(credential, request)
+        end
+
+        def validate(credential, request)
           payload = credential.payload
           unless payload.is_a?(Hash) && payload["type"] == "authorization"
             raise Mpp::VerificationError, "EVM authorization credentials are not supported for this challenge"
@@ -65,7 +71,28 @@ module Mpp
             raise Mpp::VerificationFailedError.new(reason: "EVM authorization source mismatch")
           end
 
-          settled = settle(payload, request)
+          payment_payload, requirements = facilitator_input(payload, request)
+          verified = @facilitator.verify(payment_payload, requirements)
+          unless verified["isValid"]
+            raise Mpp::VerificationFailedError.new(
+              reason: verified["invalidMessage"] || verified["invalidReason"] || "EVM facilitator verify failed"
+            )
+          end
+
+          true
+        end
+
+        # Like mppx, settlement relies on a preceding #validate and the
+        # facilitator's terminal checks; it does not repeat /verify.
+        def broadcast(credential, request)
+          payment_payload, requirements = facilitator_input(credential.payload, request)
+          settled = @facilitator.settle(payment_payload, requirements)
+          unless settled["success"]
+            raise Mpp::VerificationFailedError.new(
+              reason: settled["errorMessage"] || settled["errorReason"] || "EVM facilitator settlement failed"
+            )
+          end
+
           Mpp::Receipt.success(settled.fetch("transaction"), method: "evm")
         end
 
@@ -79,7 +106,7 @@ module Mpp
 
         private
 
-        def settle(payload, request)
+        def facilitator_input(payload, request)
           requirements = payment_requirements(request)
           payment_payload = {
             "accepted" => requirements,
@@ -97,21 +124,7 @@ module Mpp
             "x402Version" => Mpp::X402::VERSION
           }
 
-          verified = @facilitator.verify(payment_payload, requirements)
-          unless verified["isValid"]
-            raise Mpp::VerificationFailedError.new(
-              reason: verified["invalidMessage"] || verified["invalidReason"] || "EVM facilitator verify failed"
-            )
-          end
-
-          settled = @facilitator.settle(payment_payload, requirements)
-          unless settled["success"]
-            raise Mpp::VerificationFailedError.new(
-              reason: settled["errorMessage"] || settled["errorReason"] || "EVM facilitator settlement failed"
-            )
-          end
-
-          settled
+          [payment_payload, requirements]
         end
 
         def x402_credential?(credential)

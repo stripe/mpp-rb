@@ -6,7 +6,6 @@ require "webmock/minitest"
 require_relative "../../examples/tempo_feepayer/handler"
 
 class TestTempoFeepayerExample < Minitest::Test
-  RAW_TX = "0xabcdef1234567890"
   CURRENCY = Mpp::Methods::Tempo::Defaults::PATH_USD
   RECIPIENT = "0x#{"0" * 39}1"
   SENDER = "0x#{"0" * 38}aa"
@@ -36,7 +35,8 @@ class TestTempoFeepayerExample < Minitest::Test
 
   def test_paid_charge_sends_fee_payer_headers_and_broadcasts
     challenge = @server.charge(nil, "0.01", description: "Paid endpoint")
-    tx_hash = raw_transaction_hash(RAW_TX)
+    raw_tx = signed_transaction(challenge)
+    tx_hash = raw_transaction_hash(raw_tx)
     memo = Mpp::Methods::Tempo::Attribution.encode(
       server_id: challenge.realm,
       challenge_id: challenge.id
@@ -47,9 +47,9 @@ class TestTempoFeepayerExample < Minitest::Test
         body = JSON.parse(request.body)
         request.headers["Authorization"] == "Bearer test-fee-payer-token" &&
           body["method"] == "eth_signRawTransaction" &&
-          body["params"] == [RAW_TX]
+          body["params"] == [raw_tx]
       }
-      .to_return(status: 200, body: {jsonrpc: "2.0", result: RAW_TX, id: 1}.to_json)
+      .to_return(status: 200, body: {jsonrpc: "2.0", result: raw_tx, id: 1}.to_json)
 
     stub_request(:post, RPC_URL)
       .to_return { |request|
@@ -66,7 +66,7 @@ class TestTempoFeepayerExample < Minitest::Test
 
     credential = Mpp::Credential.new(
       challenge: challenge.to_echo,
-      payload: {"type" => "transaction", "signature" => RAW_TX}
+      payload: {"type" => "transaction", "signature" => raw_tx}
     )
     result = @server.charge(credential.to_authorization, "0.01", description: "Paid endpoint")
 
@@ -79,12 +79,13 @@ class TestTempoFeepayerExample < Minitest::Test
 
   def test_paid_charge_rejects_missing_fee_payer_auth
     challenge = @server.charge(nil, "0.01", description: "Paid endpoint")
+    raw_tx = signed_transaction(challenge)
     stub_request(:post, "#{SPONSOR_URL}/")
       .to_return(status: 401, body: {error: "unauthorized"}.to_json)
 
     credential = Mpp::Credential.new(
       challenge: challenge.to_echo,
-      payload: {"type" => "transaction", "signature" => RAW_TX}
+      payload: {"type" => "transaction", "signature" => raw_tx}
     )
 
     error = assert_raises(Mpp::VerificationFailedError) do
@@ -94,6 +95,18 @@ class TestTempoFeepayerExample < Minitest::Test
   end
 
   private
+
+  def signed_transaction(challenge)
+    account = Mpp::Methods::Tempo::Account.from_key("0x#{"11" * 32}")
+    memo = Mpp::Methods::Tempo::Attribution.encode(server_id: challenge.realm, challenge_id: challenge.id)
+    data = "0x#{Mpp::Methods::Tempo::TRANSFER_WITH_MEMO_SELECTOR}#{RECIPIENT.delete_prefix("0x").rjust(64, "0")}#{AMOUNT.to_s(16).rjust(64, "0")}#{memo.delete_prefix("0x")}"
+    Mpp::Methods::Tempo::Transaction.build_signed_transfer(
+      account: account, chain_id: Mpp::Methods::Tempo::Defaults::TESTNET_CHAIN_ID,
+      gas_limit: 100_000, gas_price: 1, nonce: 0, nonce_key: (1 << 256) - 1,
+      currency: CURRENCY, transfer_data: data, valid_before: Time.now.to_i + 300,
+      awaiting_fee_payer: true
+    ).first
+  end
 
   def raw_transaction_hash(raw_tx)
     require "eth"

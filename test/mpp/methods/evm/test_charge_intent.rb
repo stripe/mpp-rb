@@ -234,7 +234,84 @@ class TestEvmCharge < Minitest::Test
     assert_equal 2, result.challenges.length
   end
 
+  def test_validate_checks_facilitator_without_settling
+    challenge, credential = native_credential
+    stub_facilitator(transaction: "0xsettled")
+    intent = @method.intents.fetch("charge")
+
+    Mpp::Methods::Evm::Authorization.stub(:recover, PAYER) do
+      2.times { assert intent.validate(credential, challenge.request) }
+    end
+
+    assert_requested :post, "#{FACILITATOR}/verify", times: 2
+    assert_not_requested :post, "#{FACILITATOR}/settle"
+  end
+
+  def test_broadcast_only_settles_like_mppx
+    challenge, credential = native_credential
+    stub_facilitator(transaction: "0xsettled")
+    intent = @method.intents.fetch("charge")
+
+    receipt = intent.broadcast(credential, challenge.request)
+
+    assert_equal "0xsettled", receipt.reference
+    assert_equal "evm", receipt.method
+    assert_requested :post, "#{FACILITATOR}/settle", times: 1
+    assert_not_requested :post, "#{FACILITATOR}/verify"
+  end
+
+  def test_deprecated_verify_validates_then_broadcasts
+    challenge, credential = native_credential
+    calls = []
+    stub_request(:post, "#{FACILITATOR}/verify").to_return do
+      calls << :validate
+      {status: 200, body: {isValid: true}.to_json}
+    end
+    stub_request(:post, "#{FACILITATOR}/settle").to_return do
+      calls << :broadcast
+      {status: 200, body: {success: true, transaction: "0xsettled"}.to_json}
+    end
+    Mpp::Methods::Evm::Authorization.stub(:recover, PAYER) do
+      assert_equal "0xsettled", @method.intents.fetch("charge").verify(credential, challenge.request).reference
+    end
+    assert_equal [:validate, :broadcast], calls
+  end
+
+  def test_invalid_signature_stops_before_facilitator
+    challenge, credential = native_credential
+    Mpp::Methods::Evm::Authorization.stub(:recover, nil) do
+      assert_raises(Mpp::VerificationFailedError) do
+        @method.intents.fetch("charge").verify(credential, challenge.request)
+      end
+    end
+    assert_not_requested :post, "#{FACILITATOR}/verify"
+    assert_not_requested :post, "#{FACILITATOR}/settle"
+  end
+
+  def test_facilitator_validation_failure_prevents_settlement
+    challenge, credential = native_credential
+    stub_request(:post, "#{FACILITATOR}/verify")
+      .to_return(status: 200, body: {isValid: false, invalidReason: "insufficient funds"}.to_json)
+    Mpp::Methods::Evm::Authorization.stub(:recover, PAYER) do
+      error = assert_raises(Mpp::VerificationFailedError) do
+        @method.intents.fetch("charge").verify(credential, challenge.request)
+      end
+      assert_match(/insufficient funds/, error.message)
+    end
+    assert_not_requested :post, "#{FACILITATOR}/settle"
+  end
+
   private
+
+  def native_credential
+    challenge = @handler.charge(nil, "0.01")
+    auth = x402_payload(challenge).fetch("payload")
+    payload = auth.fetch("authorization").merge(
+      "type" => "authorization", "signature" => auth.fetch("signature"),
+      "nonce" => Mpp::Methods::Evm::Authorization.challenge_hash(challenge.to_echo)
+    )
+    [challenge, Mpp::Credential.new(challenge: challenge.to_echo, payload: payload)]
+  end
 
   def requirements_for(challenge)
     Mpp::X402::Server.to_payment_requirements(

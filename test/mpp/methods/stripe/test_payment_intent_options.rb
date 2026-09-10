@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "webmock/minitest"
 
 class TestPaymentIntentOptions < Minitest::Test
   TEMPO_ADDRESS = "0x#{"1" * 40}"
@@ -435,15 +436,108 @@ class TestPaymentIntentOptions < Minitest::Test
       "x402Version" => 2
     }
 
-    assert_raises(Mpp::BadRequestError) do
-      server.charge(
-        nil,
-        "0.01",
-        payment_signature: Mpp::X402::Header.encode_payment_signature(payload),
-        payment_intent_options: resolver,
-        url: PAID_URL
-      )
+    stub_request(:post, "https://x402.example/facilitator/verify")
+      .to_return(status: 200, body: {isValid: true}.to_json)
+    Mpp::Methods::Evm::Authorization.stub(:recover, BASE_PAYER) do
+      assert_raises(Mpp::BadRequestError) do
+        server.charge(
+          nil,
+          "0.01",
+          payment_signature: Mpp::X402::Header.encode_payment_signature(payload),
+          payment_intent_options: resolver,
+          url: PAID_URL
+        )
+      end
     end
+    assert_empty client.payment_intents.calls
+  end
+
+  def test_real_base_resolves_after_facilitator_validation_before_settlement
+    order = []
+    method, client = real_base_method(order)
+    server = server_for(method)
+    resolver = ->(**) {
+      order << :resolve
+      {customer: "cus_123"}
+    }
+    challenge = server.charge(nil, "0.01", payment_intent_options: resolver)
+    assert_empty order
+    refute challenge.request.key?("payment_intent_options")
+    credential = base_native_credential(challenge)
+    stub_request(:post, "https://x402.example/facilitator/verify").to_return do
+      order << :validate
+      {status: 200, body: {isValid: true}.to_json}
+    end
+    stub_request(:post, "https://x402.example/facilitator/settle").to_return do
+      order << :settle
+      {status: 200, body: {success: true, transaction: "0xsettled"}.to_json}
+    end
+    Mpp::Methods::Evm::Authorization.stub(:recover, BASE_PAYER) do
+      server.charge(credential.to_authorization, "0.01", payment_intent_options: resolver)
+    end
+    assert_equal [:validate, :resolve, :settle, :payment_intent], order
+    assert_equal "cus_123", client.payment_intents.calls.first.first[:customer]
+  end
+
+  def test_real_base_invalid_credential_does_not_resolve_options
+    order = []
+    method, client = real_base_method(order)
+    server = server_for(method)
+    resolver = ->(**) {
+      order << :resolve
+      {}
+    }
+    credential = base_native_credential(server.charge(nil, "0.01", payment_intent_options: resolver))
+    Mpp::Methods::Evm::Authorization.stub(:recover, nil) do
+      assert_raises(Mpp::VerificationFailedError) do
+        server.charge(credential.to_authorization, "0.01", payment_intent_options: resolver)
+      end
+    end
+    assert_empty order
+    assert_empty client.payment_intents.calls
+    assert_not_requested :post, "https://x402.example/facilitator/settle"
+  end
+
+  def test_real_tempo_resolver_failure_does_not_consume_hash
+    client = FakeStripeClient.new
+    store = Mpp::MemoryStore.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    rail = Mpp::Methods::Tempo.tempo(recipient: TEMPO_ADDRESS, intents: {"charge" => intent})
+    method = Mpp::Methods::Stripe::PaymentIntentMethod.new(method: rail, client: client, network: "tempo")
+    server = server_for(method)
+    calls = []
+    resolver = ->(**) {
+      calls << :resolve
+      assert_nil store.get("mpp:charge:0x1234")
+      raise Mpp::BadRequestError.new(reason: "invalid tax location")
+    }
+    challenge = server.charge(nil, "0.01", payment_intent_options: resolver)
+    credential = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"type" => "hash", "hash" => "0x1234"})
+    memo = Mpp::Methods::Tempo::Attribution.encode(server_id: challenge.realm, challenge_id: challenge.id)
+    sender = "0x#{"3" * 40}"
+    receipt = {
+      "status" => "0x1", "from" => sender,
+      "logs" => [{
+        "address" => challenge.request.fetch("currency"),
+        "topics" => [
+          Mpp::Methods::Tempo::TRANSFER_WITH_MEMO_TOPIC,
+          "0x#{sender.delete_prefix("0x").rjust(64, "0")}",
+          "0x#{TEMPO_ADDRESS.delete_prefix("0x").rjust(64, "0")}", memo
+        ],
+        "data" => "0x#{Integer(challenge.request.fetch("amount")).to_s(16).rjust(64, "0")}"
+      }]
+    }
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(_url, rpc_method, _params) {
+      assert_equal "eth_getTransactionReceipt", rpc_method
+      calls << :validate
+      receipt
+    }) do
+      assert_raises(Mpp::BadRequestError) do
+        server.charge(credential.to_authorization, "0.01", payment_intent_options: resolver)
+      end
+    end
+    assert_equal [:validate, :resolve], calls
+    assert_nil store.get("mpp:charge:0x1234")
     assert_empty client.payment_intents.calls
   end
 
@@ -487,6 +581,25 @@ class TestPaymentIntentOptions < Minitest::Test
   end
 
   private
+
+  def real_base_method(order)
+    client = FakeStripeClient.new { order << :payment_intent }
+    payments = Mpp::Methods::Stripe.create(
+      network_id: "network_123", livemode: false, client: client,
+      deposit_addresses: {base: BASE_ADDRESS}
+    )
+    [payments.base.charge(x402: {facilitator: "https://x402.example/facilitator"}), client]
+  end
+
+  def base_native_credential(challenge)
+    Mpp::Credential.new(challenge: challenge.to_echo, payload: {
+      "type" => "authorization", "from" => BASE_PAYER, "to" => BASE_ADDRESS,
+      "value" => challenge.request.fetch("amount"),
+      "validAfter" => "0", "validBefore" => (Time.now.to_i + 600).to_s,
+      "nonce" => Mpp::Methods::Evm::Authorization.challenge_hash(challenge.to_echo),
+      "signature" => "0x#{"22" * 65}"
+    })
+  end
 
   def split_crypto_method(order)
     client = FakeStripeClient.new { order << :payment_intent }
