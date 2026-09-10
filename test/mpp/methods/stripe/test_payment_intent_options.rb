@@ -59,6 +59,36 @@ class TestPaymentIntentOptions < Minitest::Test
     end
   end
 
+  class FakeSplitCryptoIntent
+    attr_reader :name, :requests
+
+    def initialize(order)
+      @name = "charge"
+      @order = order
+      @requests = []
+    end
+
+    def validate(credential, request)
+      @order << :validate
+      @requests << request
+      raise Mpp::VerificationError, "invalid crypto credential" unless credential.payload["valid"]
+
+      {payer: "test-payer"}
+    end
+
+    def broadcast(credential, request)
+      @order << :broadcast
+      @requests << request
+      raise Mpp::VerificationError, "broadcast failed" if credential.payload["broadcast_failure"]
+
+      Mpp::Receipt.success("0xtx", method: "tempo")
+    end
+
+    def verify(_credential, _request)
+      raise "The split rail's legacy verify must not be called"
+    end
+  end
+
   def test_validation_matches_the_javascript_shape
     options = Mpp::Methods::Stripe::PaymentIntentOptions.validate({
       amount: 999,
@@ -244,6 +274,126 @@ class TestPaymentIntentOptions < Minitest::Test
     assert_empty client.payment_intents.calls
   end
 
+  def test_split_crypto_resolves_after_validation_and_records_options_after_broadcast
+    order = []
+    method, client, intent = split_crypto_method(order)
+    resolver = lambda do |challenge:, credential:, request:|
+      order << :resolve
+      assert_equal credential.challenge, challenge
+      assert_equal Mpp::Parsing.b64_decode(challenge.request), request
+      full_options
+    end
+    payment = server_for(method).compose([method, {amount: "0.01", payment_intent_options: resolver}])
+
+    challenge = payment.call.challenges.fetch(0)
+    assert_empty order
+    refute challenge.request.key?("payment_intent_options")
+    refute challenge.request.key?("paymentIntentOptions")
+    credential = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"valid" => true})
+
+    result = payment.call(authorization: credential.to_authorization)
+
+    assert_equal [:validate, :resolve, :broadcast, :payment_intent], order
+    assert_equal "0xtx", result.receipt.reference
+    assert_equal [challenge.request, challenge.request], intent.requests
+    params, = client.payment_intents.calls.fetch(0)
+    assert_equal "cus_123", params[:customer]
+    assert_equal "buyer@example.com", params[:receipt_email]
+    assert_equal({inputs: {tax: {calculation: "taxcalc_123"}}}, params[:hooks])
+    assert_equal "order_123", params[:metadata]["order_id"]
+    assert_equal "yes", params[:metadata]["configured"]
+    assert_equal challenge.id, params[:metadata]["mpp_challenge_id"]
+  end
+
+  def test_split_crypto_validation_failure_does_not_resolve_or_broadcast
+    order = []
+    method, client = split_crypto_method(order)
+    server = server_for(method)
+    resolver = ->(**) { flunk "invalid credentials must not resolve options" }
+    challenge = server.charge(nil, "0.01", payment_intent_options: resolver)
+    credential = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"valid" => false})
+
+    assert_raises(Mpp::VerificationError) do
+      server.charge(credential.to_authorization, "0.01", payment_intent_options: resolver)
+    end
+
+    assert_equal [:validate], order
+    assert_empty client.payment_intents.calls
+  end
+
+  def test_split_crypto_invalid_options_prevent_broadcast
+    [Mpp::BadRequestError.new(reason: "invalid tax location"), {customer: ""}].each do |invalid_options|
+      order = []
+      method, client = split_crypto_method(order)
+      server = server_for(method)
+      resolver = lambda do |**|
+        order << :resolve
+        raise invalid_options if invalid_options.is_a?(Exception)
+
+        invalid_options
+      end
+      challenge = server.charge(nil, "0.01", payment_intent_options: resolver)
+      credential = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"valid" => true})
+
+      error = assert_raises(Mpp::BadRequestError, ArgumentError) do
+        server.charge(credential.to_authorization, "0.01", payment_intent_options: resolver)
+      end
+
+      assert_same invalid_options, error if invalid_options.is_a?(Exception)
+      assert_equal [:validate, :resolve], order
+      assert_empty client.payment_intents.calls
+    end
+  end
+
+  def test_split_crypto_broadcast_failure_does_not_record_payment
+    order = []
+    method, client = split_crypto_method(order)
+    server = server_for(method)
+    resolver = lambda do |**|
+      order << :resolve
+      full_options
+    end
+    challenge = server.charge(nil, "0.01", payment_intent_options: resolver)
+    credential = Mpp::Credential.new(
+      challenge: challenge.to_echo, payload: {"valid" => true, "broadcast_failure" => true}
+    )
+
+    assert_raises(Mpp::VerificationError) do
+      server.charge(credential.to_authorization, "0.01", payment_intent_options: resolver)
+    end
+
+    assert_equal [:validate, :resolve, :broadcast], order
+    assert_empty client.payment_intents.calls
+  end
+
+  def test_split_wrapper_validation_is_independent_of_option_resolution
+    order = []
+    method, client, intent = split_crypto_method(order)
+    resolver = ->(**) { flunk "standalone validation must not resolve options" }
+    wrapped, = method.prepare_intent(intent, {payment_intent_options: resolver})
+    challenge = server_for(method).charge(nil, "0.01")
+    credential = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"valid" => true})
+
+    assert_equal({payer: "test-payer"}, wrapped.validate(credential, challenge.request))
+    assert_equal [:validate], order
+    assert_empty client.payment_intents.calls
+  end
+
+  def test_split_wrapper_verify_preserves_request_scoped_static_options
+    order = []
+    method, client, intent = split_crypto_method(order)
+    first, = method.prepare_intent(intent, {payment_intent_options: {customer: "cus_first"}})
+    second, = method.prepare_intent(intent, {payment_intent_options: {customer: "cus_second"}})
+    challenge = server_for(method).charge(nil, "0.01")
+    credential = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"valid" => true})
+
+    first.verify(credential, challenge.request)
+    second.verify(credential, challenge.request)
+
+    assert_equal [:validate, :broadcast, :payment_intent] * 2, order
+    assert_equal ["cus_first", "cus_second"], client.payment_intents.calls.map { |params, _| params[:customer] }
+  end
+
   def test_base_x402_resolver_bad_request_is_not_converted_to_a_challenge
     client = FakeStripeClient.new
     payments = Mpp::Methods::Stripe.create(
@@ -330,6 +480,18 @@ class TestPaymentIntentOptions < Minitest::Test
   end
 
   private
+
+  def split_crypto_method(order)
+    client = FakeStripeClient.new { order << :payment_intent }
+    intent = FakeSplitCryptoIntent.new(order)
+    rail = Struct.new(:name, :intents, :currency, :recipient, :decimals).new(
+      "tempo", {"charge" => intent}, "usdc", TEMPO_ADDRESS, 6
+    )
+    method = Mpp::Methods::Stripe::PaymentIntentMethod.new(
+      method: rail, client: client, network: "tempo", metadata: {"configured" => "yes"}
+    )
+    [method, client, intent]
+  end
 
   def full_options
     {

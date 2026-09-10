@@ -149,8 +149,9 @@ payment = server.compose(
 ```
 
 For SPT, deferred callables run after credential validation and immediately
-before PaymentIntent creation. For crypto, they run after the signed MPP
-challenge is accepted and immediately before the rail's verification operation.
+before PaymentIntent creation. For crypto, they run after the rail's `validate`
+and immediately before `broadcast` when supported, or before legacy `verify`
+otherwise. Tempo and Base currently use the legacy path.
 The options are not serialized in the MPP challenge. Recorded crypto payments
 retry once without optional fields only when Stripe definitively rejects them.
 
