@@ -128,6 +128,32 @@ not advertised. Successful Tempo and Base payments are best-effort recorded as
 Stripe crypto transaction-verification PaymentIntents. Metadata is included on
 every Stripe PaymentIntent.
 
+Stripe machine-payment methods also accept private, request-scoped
+`payment_intent_options` in `charge` or composed-offer input. Supported fields
+match mppx: `customer`, `receipt_email`, `metadata`, and Stripe Tax calculation
+hooks. The value can be a static hash or a deferred callable:
+
+```ruby
+options = lambda do |challenge:, credential:, request:|
+  calculation = stripe_client.v1.tax.calculations.create(
+    tax_params,
+    {idempotency_key: "mpp_tax_#{challenge.id}"}
+  )
+  {hooks: {inputs: {tax: {calculation: calculation.id}}}}
+end
+
+payment = server.compose(
+  [payments.tempo.charge, {amount: "0.50", payment_intent_options: options}],
+  [payments.spt.charge, {amount: "0.50", payment_intent_options: options}]
+)
+```
+
+For SPT, deferred callables run after credential validation and immediately
+before PaymentIntent creation. For crypto, they run after the signed MPP
+challenge is accepted and immediately before the rail's verification operation.
+The options are not serialized in the MPP challenge. Recorded crypto payments
+retry once without optional fields only when Stripe definitively rejects them.
+
 `evm.charge` additionally emits `PAYMENT-REQUIRED` and accepts `PAYMENT-SIGNATURE` (x402 v2 exact) when a facilitator is configured:
 
 ```ruby

@@ -12,7 +12,10 @@ module Mpp
       autoload :ChargeIntent, "mpp/methods/stripe/charge_intent"
       autoload :ClientMethod, "mpp/methods/stripe/client_method"
       autoload :CryptoPaymentRecorder, "mpp/methods/stripe/crypto_payment_recorder"
+      autoload :AnalyticsMetadata, "mpp/methods/stripe/analytics_metadata"
       autoload :MachinePayments, "mpp/methods/stripe/machine_payments"
+      autoload :PaymentIntentMethod, "mpp/methods/stripe/payment_intent_method"
+      autoload :PaymentIntentOptions, "mpp/methods/stripe/payment_intent_options"
 
       sig do
         params(

@@ -48,6 +48,14 @@ module Mpp
           @can_offer.call(request)
         end
 
+        # Keep Stripe-only request input out of the canonical challenge while
+        # retaining it on an isolated SPT intent for terminal verification.
+        def prepare_intent(intent, input)
+          options_input = input[:payment_intent_options]
+          PaymentIntentOptions.validate_input(options_input)
+          [intent.with_payment_intent_options(options_input), input.except(:payment_intent_options)]
+        end
+
         # Transform request - injects Stripe-specific methodDetails.
         def transform_request(request, _credential)
           method_details = request.fetch("methodDetails", {})
