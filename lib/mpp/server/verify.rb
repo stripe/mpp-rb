@@ -158,7 +158,7 @@ module Mpp
         end
 
         begin
-          receipt = intent.verify(credential, request)
+          receipt = IntentLifecycle.call(intent, credential, request)
         rescue => e
           if dispatcher&.has_handlers?(Mpp::Events::PAYMENT_FAILED)
             emit_payment_failed(

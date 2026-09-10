@@ -94,7 +94,7 @@ module Mpp
         core_credential = mcp_credential.to_core
 
         begin
-          core_receipt = intent.verify(core_credential, request)
+          core_receipt = Mpp::Server::IntentLifecycle.call(intent, core_credential, request)
         rescue Mpp::VerificationError => e
           Kernel.raise PaymentVerificationError.new(
             challenges: [new_challenge.call],

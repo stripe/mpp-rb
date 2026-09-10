@@ -347,7 +347,7 @@ module Mpp
             body: body,
             http_method: http_method
           )
-          receipt = intent.verify(credential, challenge.request)
+          receipt = IntentLifecycle.call(intent, credential, challenge.request)
         rescue => error
           if @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
             Verify.emit_payment_failed(
