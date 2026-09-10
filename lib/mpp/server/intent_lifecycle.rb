@@ -26,7 +26,7 @@ module Mpp
         has_broadcast = intent.respond_to?(:broadcast)
 
         if has_validate != has_broadcast
-          raise ArgumentError, "intent must implement both #validate and #broadcast"
+          Kernel.raise ArgumentError, "intent must implement both #validate and #broadcast"
         end
 
         if has_validate
