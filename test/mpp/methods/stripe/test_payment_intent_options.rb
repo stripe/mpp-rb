@@ -60,7 +60,7 @@ class TestPaymentIntentOptions < Minitest::Test
   end
 
   class FakeSplitCryptoIntent
-    attr_reader :name, :requests
+    attr_reader :name, :requests, :last_validation
 
     def initialize(order)
       @name = "charge"
@@ -73,7 +73,11 @@ class TestPaymentIntentOptions < Minitest::Test
       @requests << request
       raise Mpp::VerificationError, "invalid crypto credential" unless credential.payload["valid"]
 
-      {payer: "test-payer"}
+      @last_validation = Mpp::Validation.new(
+        challenge: credential.challenge, credential: credential,
+        details: {payer: "test-payer"}, intent: name, method: "tempo",
+        request: request, source: credential.source
+      )
     end
 
     def broadcast(credential, request)
@@ -374,7 +378,10 @@ class TestPaymentIntentOptions < Minitest::Test
     challenge = server_for(method).charge(nil, "0.01")
     credential = Mpp::Credential.new(challenge: challenge.to_echo, payload: {"valid" => true})
 
-    assert_equal({payer: "test-payer"}, wrapped.validate(credential, challenge.request))
+    validation = wrapped.validate(credential, challenge.request)
+    assert_instance_of Mpp::Validation, validation
+    assert_same intent.last_validation, validation
+    assert_equal({payer: "test-payer"}, validation.details)
     assert_equal [:validate], order
     assert_empty client.payment_intents.calls
   end

@@ -34,7 +34,11 @@ class TestIntentLifecycle < Minitest::Test
 
     def validate(credential, request)
       @calls << [:validate, credential, request]
-      {validated: true}
+      Mpp::Validation.new(
+        challenge: credential.challenge, credential: credential,
+        details: {validated: true}, intent: name, method: "test",
+        request: request, source: credential.source
+      )
     end
 
     def broadcast(credential, request)
@@ -72,6 +76,36 @@ class TestIntentLifecycle < Minitest::Test
     def validate(_credential, _request)
       {}
     end
+  end
+
+  def test_validate_returns_a_structured_record_without_broadcasting
+    intent = TwoPhaseIntent.new
+    credential = credential_for.with(source: "test-payer")
+
+    validation = intent.validate(credential, REQUEST)
+
+    assert_instance_of Mpp::Validation, validation
+    assert_equal [:challenge, :credential, :details, :intent, :method, :request, :source], validation.members.sort
+    assert_same credential.challenge, validation.challenge
+    assert_same credential, validation.credential
+    assert_same REQUEST, validation.request
+    assert_equal({validated: true}, validation.details)
+    assert_equal "charge", validation.intent
+    assert_equal "test", validation.method
+    assert_equal "test-payer", validation.source
+    assert validation.frozen?
+    assert_equal [:validate], intent.calls.map(&:first)
+  end
+
+  def test_validation_source_is_optional
+    credential = credential_for
+    validation = Mpp::Validation.new(
+      challenge: credential.challenge, credential: credential,
+      intent: "charge", method: "test", request: REQUEST, details: {}
+    )
+
+    assert_equal({}, validation.details)
+    assert_nil validation.source
   end
 
   def test_validate_runs_before_broadcast

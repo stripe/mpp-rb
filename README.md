@@ -155,6 +155,17 @@ otherwise. Tempo and Base currently use the legacy path.
 The options are not serialized in the MPP challenge. Recorded crypto payments
 retry once without optional fields only when Stripe definitively rejects them.
 
+Two-phase intents implement `validate(credential, request)` and
+`broadcast(credential, request)`. Validation returns an `Mpp::Validation` record
+with `challenge`, `credential`, `request`, `method`, `intent`, `source`, and
+method-specific `details`, matching mppx's validation-result fields. Failed
+checks raise; validation must not settle a payment or consume replay state.
+Use an empty hash for `details` when none are available; `source` defaults to
+`nil`. The record is not a settlement receipt or independent proof of challenge
+issuance. Broadcast receives
+the original inputs and returns a receipt; the combined lifecycle does not pass
+the validation record into broadcast.
+
 `evm.charge` additionally emits `PAYMENT-REQUIRED` and accepts `PAYMENT-SIGNATURE` (x402 v2 exact) when a facilitator is configured:
 
 ```ruby

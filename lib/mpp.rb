@@ -18,6 +18,7 @@ module Mpp
   autoload :ChallengeEcho, "mpp/challenge_echo"
   autoload :Credential, "mpp/credential"
   autoload :Receipt, "mpp/receipt"
+  autoload :Validation, "mpp/validation"
   autoload :Parsing, "mpp/parsing"
   autoload :Json, "mpp/json"
   autoload :BodyDigest, "mpp/body_digest"
