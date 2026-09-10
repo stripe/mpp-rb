@@ -249,17 +249,6 @@ class TestTempoRelay < Minitest::Test
     assert_equal [:validate, :broadcast], client.calls.map(&:first)
   end
 
-  def test_intent_rejects_relay_receipt_for_another_method
-    client = DuckRelay.new
-    intent = Mpp::Methods::Tempo::ChargeIntent.new
-    Mpp::Methods::Tempo.tempo(relay: client, intents: {"charge" => intent})
-    client.stub(:broadcast, Mpp::Receipt.success("wrong", method: "evm")) do
-      assert_raises(Mpp::VerificationError) do
-        intent.broadcast(@credential, {"amount" => "10000", "currency" => Mpp::Methods::Tempo::Defaults::PATH_USD, "recipient" => "0x#{"0" * 39}1"})
-      end
-    end
-  end
-
   DuckRelay = Struct.new(:calls) do
     def initialize
       super([])

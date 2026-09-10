@@ -175,11 +175,11 @@ local Tempo broadcast repeats credential checks, while EVM and relay broadcast
 delegate to settlement without repeating the remote validation call. Validation
 is a preflight check, not a guarantee that settlement will succeed.
 
-Local Tempo transaction preflight requires the `eth` and `rlp` gems and an RPC
-supporting `eth_call`. It supports ECDSA sender signatures and rejects unsupported
-transaction authorizations instead of skipping their validation. Relay-backed
-validation is delegated to the relay. Pending local submissions retain
-receipt-based retry recovery without re-simulating an already-submitted payment.
+Tempo retains its existing validation: transaction preflight is best-effort,
+local sponsorship checks run before co-signing, and hosted payers and relays
+retain their own validation policies. This split does not add mppx's stronger
+transaction preflight checks; final transaction acceptance still depends on the
+node or payment service.
 
 `evm.charge` additionally emits `PAYMENT-REQUIRED` and accepts `PAYMENT-SIGNATURE` (x402 v2 exact) when a facilitator is configured:
 
