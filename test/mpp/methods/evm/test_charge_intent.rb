@@ -185,20 +185,6 @@ class TestEvmCharge < Minitest::Test
     assert_equal PAYER, decoded["payer"]
   end
 
-  def test_x402_uses_two_phase_intent_lifecycle
-    calls = []
-    original = @method.intents.fetch("charge")
-    @method.intents["charge"] = TwoPhaseIntentAdapter.new(original, calls)
-    stub_facilitator(transaction: "0xsettled")
-    challenge = @handler.charge(nil, "0.01")
-
-    Mpp::Methods::Evm::Authorization.stub(:recover, PAYER) do
-      @handler.charge(nil, "0.01", payment_signature: encode_signature(x402_payload(challenge)), url: URL)
-    end
-
-    assert_equal [:validate, :broadcast], calls
-  end
-
   def test_payment_success_hook_runs_after_x402_settlement
     seen = []
     method = Mpp::Methods::Evm.charge(
@@ -312,30 +298,6 @@ class TestEvmCharge < Minitest::Test
       def verify(_credential, _request)
         Mpp::Receipt.success("0xtempo", method: "tempo")
       end
-    end
-  end
-
-  class TwoPhaseIntentAdapter
-    attr_reader :name
-
-    def initialize(delegate, calls)
-      @delegate = delegate
-      @name = delegate.name
-      @calls = calls
-    end
-
-    def validate(_credential, _request)
-      @calls << :validate
-      {validated: true}
-    end
-
-    def broadcast(credential, request)
-      @calls << :broadcast
-      @delegate.verify(credential, request)
-    end
-
-    def payment_requirements(request)
-      @delegate.payment_requirements(request)
     end
   end
 end

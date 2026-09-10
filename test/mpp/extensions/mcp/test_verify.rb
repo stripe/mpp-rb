@@ -3,20 +3,13 @@
 require "test_helper"
 
 class MCPMockIntent
-  attr_reader :name, :calls
+  attr_reader :name
 
   def initialize(name: "charge")
     @name = name
-    @calls = []
   end
 
-  def validate(credential, request)
-    @calls << [:validate, credential, request]
-    {validated: true}
-  end
-
-  def broadcast(credential, request)
-    @calls << [:broadcast, credential, request]
+  def verify(_credential, _request)
     Mpp::Receipt.success("0xmocktxhash", method: "tempo")
   end
 end
@@ -100,7 +93,6 @@ class TestMCPVerify < Minitest::Test
     assert_instance_of Mpp::Extensions::MCP::MCPReceipt, receipt
     assert_equal "success", receipt.status
     assert_equal challenge.id, receipt.challenge_id
-    assert_equal [:validate, :broadcast], @intent.calls.map(&:first)
   end
 
   def test_rejects_wrong_secret
