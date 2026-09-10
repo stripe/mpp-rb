@@ -7,7 +7,7 @@ module Mpp
     #
     # Two-phase intents expose separate non-mutating validation and terminal
     # payment operations:
-    #   validate(credential, request) -> Mpp::Validation
+    #   validate(credential, request) -> Validation
     #   broadcast(credential, request) -> Receipt
     #
     # Broadcast receives the original inputs rather than trusting a prior

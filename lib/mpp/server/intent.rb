@@ -7,7 +7,7 @@ module Mpp
 
     # Intent interface (duck type):
     #   name -> String
-    #   validate(credential, request) -> Mpp::Validation
+    #   validate(credential, request) -> Validation
     #   broadcast(credential, request) -> Receipt
     #
     # Intents may temporarily implement only the deprecated verify API:
