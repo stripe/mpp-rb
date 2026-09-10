@@ -67,6 +67,36 @@ class TestParsing < Minitest::Test
     assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate('Payment id="abc"') }
   end
 
+  # Regression tests for AGR-2026-095: auth-parameter names are
+  # case-insensitive (RFC 9110 §11.2), but the duplicate check and storage
+  # key both used the original casing, so "id" and "ID" were treated as
+  # distinct parameters instead of a rejected duplicate.
+
+  def test_parse_www_authenticate_rejects_case_variant_duplicate_id
+    request_b64 = Mpp::Parsing.b64_encode({"amount" => "1000000"})
+    header = %(Payment id="abc", realm="api.example.com", method="tempo", intent="charge", request="#{request_b64}", ID="different")
+
+    error = assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate(header) }
+    assert_match(/Duplicate parameter/, error.message)
+  end
+
+  def test_parse_www_authenticate_rejects_case_variant_duplicate_realm
+    request_b64 = Mpp::Parsing.b64_encode({"amount" => "1000000"})
+    header = %(Payment id="abc", realm="api.example.com", REALM="other.example.com", method="tempo", intent="charge", request="#{request_b64}")
+
+    error = assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate(header) }
+    assert_match(/Duplicate parameter/, error.message)
+  end
+
+  def test_parse_www_authenticate_still_rejects_same_case_duplicate
+    # Same-case duplicates must keep failing exactly as before.
+    request_b64 = Mpp::Parsing.b64_encode({"amount" => "1000000"})
+    header = %(Payment id="abc", realm="api.example.com", method="tempo", intent="charge", request="#{request_b64}", id="different")
+
+    error = assert_raises(Mpp::ParseError) { Mpp::Challenge.from_www_authenticate(header) }
+    assert_match(/Duplicate parameter/, error.message)
+  end
+
   def test_parse_www_authenticate_rejects_invalid_method_ids
     request_b64 = Mpp::Parsing.b64_encode({"amount" => "1000000"})
 
