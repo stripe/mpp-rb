@@ -737,7 +737,14 @@ class TestTempoChargeIntent < Minitest::Test
     intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
     credential = hash_credential
     Mpp::Methods::Tempo::Rpc.stub(:call, receipt([transfer_log(memo: bound_memo)])) do
-      2.times { assert intent.validate(credential, request_hash) }
+      2.times do
+        validation = intent.validate(credential, request_hash)
+        assert_instance_of Mpp::Validation, validation
+        assert_equal "tempo", validation.method
+        assert_equal "charge", validation.intent
+        assert_equal({mode: "push"}, validation.details)
+        assert_same credential, validation.credential
+      end
       assert_nil store.get("mpp:charge:#{HASH}")
       assert_equal HASH, intent.broadcast(credential, request_hash).reference
       assert_equal HASH, store.get("mpp:charge:#{HASH}")

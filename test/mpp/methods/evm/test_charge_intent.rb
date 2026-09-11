@@ -240,7 +240,15 @@ class TestEvmCharge < Minitest::Test
     intent = @method.intents.fetch("charge")
 
     Mpp::Methods::Evm::Authorization.stub(:recover, PAYER) do
-      2.times { assert intent.validate(credential, challenge.request) }
+      2.times do
+        validation = intent.validate(credential, challenge.request)
+        assert_instance_of Mpp::Validation, validation
+        assert_equal "evm", validation.method
+        assert_equal "charge", validation.intent
+        assert_equal({payer: PAYER}, validation.details)
+        assert_same credential, validation.credential
+        assert_same challenge.request, validation.request
+      end
     end
 
     assert_requested :post, "#{FACILITATOR}/verify", times: 2

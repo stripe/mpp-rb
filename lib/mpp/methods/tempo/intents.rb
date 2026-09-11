@@ -58,7 +58,16 @@ module Mpp
           else
             validate_credential(credential, req)
           end
-          true
+
+          Mpp::Validation.new(
+            challenge: credential.challenge,
+            credential: credential,
+            details: {mode: validation_mode(credential)},
+            intent: name,
+            method: "tempo",
+            request: request,
+            source: credential.source
+          )
         end
 
         def broadcast(credential, request)
@@ -87,6 +96,14 @@ module Mpp
         end
 
         private
+
+        def validation_mode(credential)
+          case credential.payload["type"]
+          when "hash" then "push"
+          when "proof" then "proof"
+          when "transaction" then "pull"
+          end
+        end
 
         def resolve_request(credential, request)
           req = Schemas::ChargeRequest.from_hash(request)

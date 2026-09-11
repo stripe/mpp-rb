@@ -79,7 +79,15 @@ module Mpp
             )
           end
 
-          true
+          Mpp::Validation.new(
+            challenge: credential.challenge,
+            credential: credential,
+            details: {payer: checksummed_from},
+            intent: name,
+            method: "evm",
+            request: request,
+            source: credential.source
+          )
         end
 
         # Like mppx, settlement relies on a preceding #validate and the

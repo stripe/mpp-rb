@@ -231,7 +231,11 @@ class TestTempoRelay < Minitest::Test
     Mpp::Methods::Tempo.tempo(relay: client, intents: {"charge" => intent})
     request = {"amount" => "10000", "currency" => Mpp::Methods::Tempo::Defaults::PATH_USD, "recipient" => "0x#{"0" * 39}1"}
 
-    assert intent.validate(@credential, request)
+    validation = intent.validate(@credential, request)
+    assert_instance_of Mpp::Validation, validation
+    assert_equal({mode: "pull"}, validation.details)
+    assert_same @credential, validation.credential
+    assert_same request, validation.request
     assert_equal [:validate], client.calls.map(&:first)
     assert_equal "0xduck", intent.broadcast(@credential, request).reference
     assert_equal [:validate, :broadcast], client.calls.map(&:first)
