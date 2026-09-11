@@ -48,22 +48,51 @@ module Mpp
             @client = client
             @network = network
             @metadata = metadata
+
+            # Mirror the rail's capabilities so server dispatch can validate
+            # before entering the terminal operation that resolves options.
+            if intent.respond_to?(:validate)
+              define_singleton_method(:validate) do |credential, request|
+                @intent.validate(credential, request)
+              end
+            end
+            if intent.respond_to?(:broadcast)
+              define_singleton_method(:broadcast) do |credential, request|
+                options = resolve_options(credential, request)
+                receipt = @intent.broadcast(credential, request)
+                record_payment(credential, request, receipt, options)
+              end
+            end
           end
 
+          # @deprecated Use #validate and #broadcast when supported by the rail.
           def verify(credential, request)
-            resolved_options = PaymentIntentOptions.resolve(
+            if respond_to?(:validate) || respond_to?(:broadcast)
+              return Mpp::Server::IntentLifecycle.call(self, credential, request)
+            end
+
+            options = resolve_options(credential, request)
+            receipt = @intent.verify(credential, request)
+            record_payment(credential, request, receipt, options)
+          end
+
+          private
+
+          def resolve_options(credential, request)
+            PaymentIntentOptions.resolve(
               @options_input,
               challenge: credential.challenge,
               credential: credential,
               request: request
             )
-            receipt = @intent.verify(credential, request)
+          end
 
+          def record_payment(credential, request, receipt, options)
             CryptoPaymentRecorder.new(client: @client, network: @network, metadata: @metadata).call(
               challenge: credential.challenge,
               receipt: receipt,
               request: request,
-              payment_intent_options: resolved_options
+              payment_intent_options: options
             )
             receipt
           end

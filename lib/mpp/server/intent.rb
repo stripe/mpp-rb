@@ -6,7 +6,11 @@ module Mpp
     extend T::Sig
 
     # Intent interface (duck type):
-    #   name  -> String
+    #   name -> String
+    #   validate(credential, request) -> Validation
+    #   broadcast(credential, request) -> Receipt
+    #
+    # Intents may temporarily implement only the deprecated verify API:
     #   verify(credential, request) -> Receipt
     #
     # Implement this interface for custom payment intents.
@@ -25,6 +29,7 @@ module Mpp
       end
 
       sig { params(credential: Mpp::Credential, request: T::Hash[String, T.untyped]).returns(Mpp::Receipt) }
+      # @deprecated Implement #validate and #broadcast for new intents.
       def verify(credential, request)
         @verify_fn.call(credential, request)
       end
