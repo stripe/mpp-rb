@@ -96,8 +96,40 @@ module Mpp
         end
         private_class_method :merge_api_key_headers
 
+        def self.to_relay_input(credential)
+          echo = credential.challenge
+          challenge = {
+            "id" => echo.id,
+            "realm" => echo.realm,
+            "method" => echo.method,
+            "intent" => echo.intent,
+            "request" => decode_request(echo.request)
+          }
+          challenge["expires"] = echo.expires if echo.expires
+          challenge["digest"] = echo.digest if echo.digest
+          challenge["opaque"] = echo.opaque if echo.opaque
+
+          input = {
+            "challenge" => challenge,
+            "payload" => credential.payload
+          }
+          input["source"] = credential.source if credential.source
+          input
+        end
+
+        def self.decode_request(request)
+          return request if request.is_a?(Hash)
+          return request unless request.is_a?(String) && !request.empty?
+
+          Mpp::Parsing.b64_decode(request)
+        rescue Mpp::ParseError
+          request
+        end
+        private_class_method :decode_request
+
+        # @deprecated Use #validate followed by #broadcast.
         def verify(credential, _request = nil)
-          input = to_relay_input(credential)
+          input = self.class.to_relay_input(credential)
           validate(input)
           broadcast(input)
         end
@@ -153,36 +185,6 @@ module Mpp
           raise Mpp::VerificationFailedError.new(reason: "relay #{path} returned invalid JSON")
         rescue Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::ETIMEDOUT, Net::OpenTimeout, Net::ReadTimeout, SocketError => e
           raise Mpp::VerificationFailedError.new(reason: "relay request failed: #{e.message}")
-        end
-
-        def to_relay_input(credential)
-          echo = credential.challenge
-          challenge = {
-            "id" => echo.id,
-            "realm" => echo.realm,
-            "method" => echo.method,
-            "intent" => echo.intent,
-            "request" => decode_request(echo.request)
-          }
-          challenge["expires"] = echo.expires if echo.expires
-          challenge["digest"] = echo.digest if echo.digest
-          challenge["opaque"] = echo.opaque if echo.opaque
-
-          input = {
-            "challenge" => challenge,
-            "payload" => credential.payload
-          }
-          input["source"] = credential.source if credential.source
-          input
-        end
-
-        def decode_request(request)
-          return request if request.is_a?(Hash)
-          return request unless request.is_a?(String) && !request.empty?
-
-          Mpp::Parsing.b64_decode(request)
-        rescue Mpp::ParseError
-          request
         end
 
         def idempotency_key(input)

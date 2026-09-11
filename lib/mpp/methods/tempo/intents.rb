@@ -45,7 +45,67 @@ module Mpp
           @_method&.relay
         end
 
+        # @deprecated Use #validate followed by #broadcast.
         def verify(credential, request)
+          validate(credential, request)
+          broadcast(credential, request)
+        end
+
+        def validate(credential, request)
+          req = resolve_request(credential, request)
+          if relay
+            relay.validate(Relay.to_relay_input(credential))
+          else
+            validate_credential(credential, req)
+          end
+
+          Mpp::Validation.new(
+            challenge: credential.challenge,
+            credential: credential,
+            details: {mode: validation_mode(credential)},
+            intent: name,
+            method: "tempo",
+            request: request,
+            source: credential.source
+          )
+        end
+
+        def broadcast(credential, request)
+          req = resolve_request(credential, request)
+          return relay.broadcast(Relay.to_relay_input(credential)) if relay
+
+          # mppx revalidates Tempo credentials before claiming replay state or
+          # submitting a transaction. No per-credential state lives on the intent.
+          validated = validate_credential(credential, req)
+          case credential.payload["type"]
+          when "hash"
+            hash = credential.payload.fetch("hash")
+            unless @store.put_if_absent("mpp:charge:#{hash.downcase}", hash)
+              raise Mpp::VerificationError, "Transaction hash already used"
+            end
+            validated
+          when "proof"
+            unless @store.put_if_absent("mpp:proof:#{credential.challenge.id}", true)
+              raise Mpp::VerificationError, "Proof credential has already been used"
+            end
+            validated
+          when "transaction"
+            payload = Schemas::TransactionCredentialPayload.new(type: "transaction", signature: credential.payload["signature"])
+            broadcast_transaction(payload, req, credential: credential)
+          end
+        end
+
+        private
+
+        def validation_mode(credential)
+          case credential.payload["type"]
+          when "hash" then "push"
+          when "proof" then "proof"
+          when "transaction" then "pull"
+          end
+        end
+
+        def resolve_request(credential, request)
           req = Schemas::ChargeRequest.from_hash(request)
 
           # Check challenge expiry
@@ -55,34 +115,33 @@ module Mpp
             raise Mpp::VerificationError, "Request has expired" if expires < Time.now.utc
           end
 
-          return relay.verify(credential, request) if relay
+          req
+        end
 
+        def validate_credential(credential, req)
           payload_data = credential.payload
           unless payload_data.is_a?(Hash) && payload_data.key?("type")
-            raise Mpp::VerificationError,
-              "Invalid credential payload"
+            raise Mpp::VerificationError, "Invalid credential payload"
           end
 
           case payload_data["type"]
           when "hash"
             payload = Schemas::HashCredentialPayload.new(type: "hash", hash: payload_data["hash"])
-            verify_hash(payload, req, credential: credential)
+            validate_hash(payload, req, credential: credential)
           when "transaction"
             payload = Schemas::TransactionCredentialPayload.new(
               type: "transaction", signature: payload_data["signature"]
             )
-            verify_transaction(payload, req, credential: credential)
+            validate_transaction(payload, req, credential: credential)
           when "proof"
             payload = Schemas::ProofCredentialPayload.new(
               type: "proof", signature: payload_data["signature"]
             )
-            verify_proof(payload, req, credential: credential)
+            validate_proof(payload, req, credential: credential)
           else
             raise Mpp::VerificationError, "Invalid credential type: #{payload_data["type"]}"
           end
         end
-
-        private
 
         def get_rpc_url
           raise Mpp::VerificationError, "No rpc_url configured on ChargeIntent" unless @rpc_url
@@ -109,13 +168,8 @@ module Mpp
           parsed[:address]
         end
 
-        def verify_hash(payload, request, credential:)
-          # Validate the source before reserving the hash.
+        def validate_hash(payload, request, credential:)
           source_address = parse_hash_credential_source(credential.source, request.method_details.chain_id)
-
-          store_key = "mpp:charge:#{payload.hash.downcase}"
-          raise Mpp::VerificationError, "Transaction hash already used" unless @store.put_if_absent(store_key,
-            payload.hash)
 
           rpc_url = get_rpc_url
           result = Rpc.call(rpc_url, "eth_getTransactionReceipt", [payload.hash])
@@ -138,9 +192,7 @@ module Mpp
           Mpp::Receipt.success(payload.hash)
         end
 
-        def verify_transaction(payload, request, credential:)
-          validate_transaction_payload(payload.signature, request, challenge: credential.challenge)
-
+        def broadcast_transaction(payload, request, credential:)
           raw_tx = payload.signature
 
           # Simulation payload for the locally co-signed tx, if we sponsor it.
@@ -338,6 +390,21 @@ module Mpp
           raise Mpp::VerificationError, "Payment verification failed: memo is not bound to this challenge"
         end
 
+        def validate_transaction(payload, request, credential:)
+          validate_transaction_payload(payload.signature, request, challenge: credential.challenge)
+          if request.method_details.fee_payer
+            payer = fee_payer
+            raise Mpp::VerificationError, "No fee payer configured" unless payer
+
+            # Move existing local sponsorship checks before signing. Hosted
+            # payers retain their own policy and terminal credential validation.
+            if local_fee_payer?(payer)
+              prepare_fee_payer_transaction(payload.signature, request.currency, request: request, challenge: credential.challenge)
+            end
+          end
+          true
+        end
+
         def validate_transaction_payload(signature, request, challenge: nil)
           # Best-effort pre-broadcast check
           begin
@@ -451,7 +518,7 @@ module Mpp
           true
         end
 
-        def verify_proof(payload, request, credential:)
+        def validate_proof(payload, request, credential:)
           raise Mpp::VerificationError, "Proof credentials are only valid for zero-amount challenges" unless Integer(request.amount).zero?
           raise Mpp::VerificationError, "Proof credential must include a source" unless credential.source
 
@@ -469,9 +536,6 @@ module Mpp
           )
           raise Mpp::VerificationError, "Proof signature does not match source" unless valid
 
-          store_key = "mpp:proof:#{credential.challenge.id}"
-          raise Mpp::VerificationError, "Proof credential has already been used" unless @store.put_if_absent(store_key, true)
-
           Mpp::Receipt.success(credential.challenge.id)
         end
 
@@ -480,10 +544,20 @@ module Mpp
         end
 
         def cosign_as_fee_payer(raw_tx, fee_token, request: nil, challenge: nil)
+          raise Mpp::VerificationError, "No fee payer account configured" unless fee_payer
+
+          tx_to_sign, recovered_addr = prepare_fee_payer_transaction(raw_tx, fee_token, request: request, challenge: challenge)
+          fee_payer_sig = fee_payer.sign_hash(tx_to_sign.fee_payer_signature_hash)
+          signed = tx_to_sign.with(fee_payer_signature: fee_payer_sig)
+          raw_tx = "0x#{signed.encoded_2718.unpack1("H*")}"
+
+          [raw_tx, build_simulate_payload(tx_to_sign, recovered_addr, fee_payer_sig)]
+        end
+
+        # Pure sponsorship checks, shared by validation and terminal signing.
+        def prepare_fee_payer_transaction(raw_tx, fee_token, request: nil, challenge: nil)
           require "eth"
           require "rlp"
-
-          raise Mpp::VerificationError, "No fee payer account configured" unless fee_payer
 
           # Decode the 0x78 fee payer envelope
           begin
@@ -613,16 +687,7 @@ module Mpp
               "Fee token #{resolved_fee_token} is not allowed by fee payer policy"
           end
 
-          tx_to_sign = tx_for_recovery.with(fee_token: resolved_fee_token)
-
-          # Fee payer signs the 0x78 payload, which identifies the recovered sender.
-          fee_payer_hash = tx_to_sign.fee_payer_signature_hash
-          fee_payer_sig = fee_payer.sign_hash(fee_payer_hash)
-
-          signed = tx_to_sign.with(fee_payer_signature: fee_payer_sig)
-          raw_tx = "0x#{signed.encoded_2718.unpack1("H*")}"
-
-          [raw_tx, build_simulate_payload(tx_to_sign, recovered_addr, fee_payer_sig)]
+          [tx_for_recovery.with(fee_token: resolved_fee_token), recovered_addr]
         end
 
         # Build a `tempo_simulateV1` payload for the co-signed `0x76` tx.

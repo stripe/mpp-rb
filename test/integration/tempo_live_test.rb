@@ -27,7 +27,11 @@ class TempoLiveIntegrationTest < Minitest::Test
     challenge = challenge_for(recipient: recipient.address, memo: memo)
 
     credential = client_method(account: payer).create_credential(challenge)
-    receipt = charge_intent.verify(credential, challenge.request)
+    intent = charge_intent
+    balance_before = token_balance(recipient.address)
+    2.times { assert intent.validate(credential, challenge.request) }
+    assert_equal balance_before, token_balance(recipient.address)
+    receipt = intent.broadcast(credential, challenge.request)
 
     assert_equal "success", receipt.status
     assert_equal "tempo", receipt.method

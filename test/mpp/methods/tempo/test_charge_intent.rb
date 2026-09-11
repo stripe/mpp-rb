@@ -433,12 +433,12 @@ class TestTempoChargeIntent < Minitest::Test
   end
 
   def test_transaction_credential_releases_reservation_on_simulation_failure
-    raw_tx = "0xabcdef1234567890"
+    raw_tx = signed_transaction(awaiting_fee_payer: true)
     tx_hash = raw_transaction_hash(raw_tx)
     challenge_id = "challenge-123"
     store = Mpp::MemoryStore.new
     intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
-    Mpp::Methods::Tempo.tempo(intents: {"charge" => intent}, fee_payer: Object.new)
+    Mpp::Methods::Tempo.tempo(intents: {"charge" => intent}, fee_payer: Object.new, fee_payer_allowed_fee_tokens: [CURRENCY])
     credential = transaction_credential(raw_tx, challenge_id: challenge_id)
     request = request_hash.merge("methodDetails" => {"feePayer" => true, "chainId" => CHAIN_ID})
     calls = []
@@ -732,7 +732,137 @@ class TestTempoChargeIntent < Minitest::Test
     assert_equal HASH, result.reference
   end
 
+  def test_hash_validation_does_not_consume_payment
+    store = Mpp::MemoryStore.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    credential = hash_credential
+    Mpp::Methods::Tempo::Rpc.stub(:call, receipt([transfer_log(memo: bound_memo)])) do
+      2.times do
+        validation = intent.validate(credential, request_hash)
+        assert_instance_of Mpp::Validation, validation
+        assert_equal "tempo", validation.method
+        assert_equal "charge", validation.intent
+        assert_equal({mode: "push"}, validation.details)
+        assert_same credential, validation.credential
+      end
+      assert_nil store.get("mpp:charge:#{HASH}")
+      assert_equal HASH, intent.broadcast(credential, request_hash).reference
+      assert_equal HASH, store.get("mpp:charge:#{HASH}")
+      assert_raises(Mpp::VerificationError) { intent.broadcast(credential, request_hash) }
+    end
+  end
+
+  def test_hash_broadcast_revalidates_without_consuming_invalid_payment
+    store = Mpp::MemoryStore.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    credential = hash_credential
+    Mpp::Methods::Tempo::Rpc.stub(:call, receipt([transfer_log(memo: bound_memo)])) do
+      assert intent.validate(credential, request_hash)
+    end
+    Mpp::Methods::Tempo::Rpc.stub(:call, receipt([])) do
+      assert_raises(Mpp::VerificationError) { intent.broadcast(credential, request_hash) }
+    end
+    assert_nil store.get("mpp:charge:#{HASH}")
+  end
+
+  def test_proof_validation_does_not_consume_challenge
+    account = Mpp::Methods::Tempo::Account.from_key("0x#{"11" * 32}")
+    challenge = hash_credential.challenge
+    signature = Mpp::Methods::Tempo::Proof.sign(
+      account: account, chain_id: CHAIN_ID, challenge_id: challenge.id, realm: REALM
+    )
+    credential = Mpp::Credential.new(
+      challenge: challenge, payload: {"type" => "proof", "signature" => signature},
+      source: Mpp::Methods::Tempo::Proof.source(address: account.address, chain_id: CHAIN_ID)
+    )
+    request = request_hash.merge("amount" => "0")
+    2.times { assert @intent.validate(credential, request) }
+    assert_equal challenge.id, @intent.broadcast(credential, request).reference
+    assert_raises(Mpp::VerificationError) { @intent.broadcast(credential, request) }
+  end
+
+  def test_transaction_validation_rejects_wrong_chain_and_memo
+    credential = transaction_credential(signed_transaction, challenge_id: "challenge-123")
+    assert_raises(Mpp::VerificationError) do
+      @intent.validate(credential, request_hash.merge("methodDetails" => {"chainId" => 1}))
+    end
+    wrong_memo = transaction_credential(signed_transaction(challenge_id: "other"), challenge_id: "challenge-123")
+    assert_raises(Mpp::VerificationError) { @intent.validate(wrong_memo, request_hash) }
+  end
+
+  def test_sponsored_validation_never_signs_calls_hosted_payer_or_writes_store
+    raw_tx = signed_transaction(awaiting_fee_payer: true)
+    credential = transaction_credential(raw_tx, challenge_id: "challenge-123")
+    request = request_hash.merge("methodDetails" => {"chainId" => CHAIN_ID, "feePayer" => true})
+    [Object.new, Mpp::Methods::Tempo::FeePayerClient.new("https://sponsor.example.test")].each do |payer|
+      store = Mpp::MemoryStore.new
+      intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+      Mpp::Methods::Tempo.tempo(
+        intents: {"charge" => intent}, fee_payer: payer, fee_payer_allowed_fee_tokens: [CURRENCY]
+      )
+      2.times { assert intent.validate(credential, request) }
+      assert_nil store.get("mpp:charge:#{raw_transaction_hash(raw_tx)}")
+    end
+  end
+
+  def test_transaction_validation_does_not_add_rpc_or_claim_replay_state
+    store = Mpp::MemoryStore.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    raw_tx = signed_transaction
+    credential = transaction_credential(raw_tx, challenge_id: "challenge-123")
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_) { flunk "validation must not submit or simulate" }) do
+      2.times { assert intent.validate(credential, request_hash) }
+    end
+    assert_nil store.get("mpp:charge:#{raw_transaction_hash(raw_tx)}")
+  end
+
+  def test_transaction_preflight_keeps_existing_best_effort_formats
+    require "rlp"
+    decoded = RLP.decode([signed_transaction[4..]].pack("H*"))
+    # Preflight historically leaves signature/authorization verification to the
+    # node. A split must not introduce an ECDSA-only acceptance restriction.
+    decoded[-1] = "\x03".b + ("\x11".b * 85)
+    decoded.insert(13, [])
+    extended = "0x76#{RLP.encode(decoded).unpack1("H*")}"
+    ["0xabcdef", "0x76c0", extended].each do |raw_tx|
+      credential = transaction_credential(raw_tx, challenge_id: "challenge-123")
+      assert @intent.validate(credential, request_hash)
+    end
+  end
+
+  def test_hosted_sponsor_does_not_inherit_local_fee_token_policy
+    raw_tx = signed_transaction(awaiting_fee_payer: true)
+    credential = transaction_credential(raw_tx, challenge_id: "challenge-123")
+    request = request_hash.merge("methodDetails" => {"chainId" => CHAIN_ID, "feePayer" => true})
+    # PATH_USD is not in the default local sponsor allowlist on mainnet. The
+    # hosted sponsor must retain authority over its own supported fee tokens.
+    Mpp::Methods::Tempo.tempo(
+      intents: {"charge" => @intent}, fee_payer: "https://sponsor.example.test"
+    )
+    assert @intent.validate(credential, request)
+
+    Mpp::Methods::Tempo.tempo(intents: {"charge" => @intent}, fee_payer: Object.new)
+    error = assert_raises(Mpp::VerificationError) { @intent.validate(credential, request) }
+    assert_match(/not allowed by fee payer policy/, error.message)
+  end
+
+  def test_hash_validation_preserves_zero_amount_payments
+    request = request_hash.merge("amount" => "0")
+    log = transfer_log(memo: bound_memo).merge("data" => "0x#{"0" * 64}")
+    Mpp::Methods::Tempo::Rpc.stub(:call, receipt([log])) do
+      assert @intent.validate(hash_credential, request)
+      assert_equal HASH, @intent.broadcast(hash_credential, request).reference
+    end
+  end
+
   private
+
+  def hash_credential
+    Mpp::Credential.new(
+      challenge: transaction_credential("unused", challenge_id: "challenge-123").challenge,
+      payload: {"type" => "hash", "hash" => HASH}
+    )
+  end
 
   def did_pkh(chain_id, address)
     "did:pkh:eip155:#{chain_id}:#{address}"
@@ -758,6 +888,17 @@ class TestTempoChargeIntent < Minitest::Test
     Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, _method, _params) { receipt }) do
       intent.verify(credential, request_hash)
     end
+  end
+
+  def signed_transaction(awaiting_fee_payer: false, challenge_id: "challenge-123")
+    account = Mpp::Methods::Tempo::Account.from_key("0x#{"11" * 32}")
+    memo = Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: challenge_id)
+    data = "0x#{Mpp::Methods::Tempo::TRANSFER_WITH_MEMO_SELECTOR}#{RECIPIENT.delete_prefix("0x").rjust(64, "0")}#{1000.to_s(16).rjust(64, "0")}#{memo.delete_prefix("0x")}"
+    Mpp::Methods::Tempo::Transaction.build_signed_transfer(
+      account: account, chain_id: CHAIN_ID, gas_limit: 100_000, gas_price: 1,
+      nonce: 0, nonce_key: (1 << 256) - 1, currency: CURRENCY, transfer_data: data,
+      valid_before: Time.now.to_i + 300, awaiting_fee_payer: awaiting_fee_payer
+    ).first
   end
 
   def raw_transaction_hash(raw_tx)

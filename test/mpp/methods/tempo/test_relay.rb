@@ -225,6 +225,34 @@ class TestTempoRelay < Minitest::Test
     assert_not_requested :post, /rpc/
   end
 
+  def test_intent_exposes_split_relay_operations_for_duck_typed_clients
+    client = DuckRelay.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new
+    Mpp::Methods::Tempo.tempo(relay: client, intents: {"charge" => intent})
+    request = {"amount" => "10000", "currency" => Mpp::Methods::Tempo::Defaults::PATH_USD, "recipient" => "0x#{"0" * 39}1"}
+
+    validation = intent.validate(@credential, request)
+    assert_instance_of Mpp::Validation, validation
+    assert_equal({mode: "pull"}, validation.details)
+    assert_same @credential, validation.credential
+    assert_same request, validation.request
+    assert_equal [:validate], client.calls.map(&:first)
+    assert_equal "0xduck", intent.broadcast(@credential, request).reference
+    assert_equal [:validate, :broadcast], client.calls.map(&:first)
+    assert_equal client.calls.first.last, client.calls.last.last
+    assert_equal({}, client.calls.first.last.dig("challenge", "request"))
+    assert_equal @credential.source, client.calls.first.last["source"]
+    assert_not_requested :post, /rpc/
+  end
+
+  def test_intent_deprecated_verify_supports_duck_typed_relay
+    client = DuckRelay.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new
+    Mpp::Methods::Tempo.tempo(relay: client, intents: {"charge" => intent})
+    intent.verify(@credential, {"amount" => "10000", "currency" => Mpp::Methods::Tempo::Defaults::PATH_USD, "recipient" => "0x#{"0" * 39}1"})
+    assert_equal [:validate, :broadcast], client.calls.map(&:first)
+  end
+
   DuckRelay = Struct.new(:calls) do
     def initialize
       super([])
