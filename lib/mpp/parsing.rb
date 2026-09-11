@@ -15,6 +15,14 @@ module Mpp
     AUTH_PARAM_RE = /([a-zA-Z_][\w-]*+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,]++))/
     PAYMENT_METHOD_ID_RE = /\A[a-z]+\z/
 
+    # Top-level receipt keys with dedicated fields. Every other top-level key is
+    # preserved verbatim in Receipt#extensions. These base fields always win: an
+    # extension can never shadow one on parse or format.
+    RECEIPT_BASE_FIELDS = T.let(
+      Set["status", "timestamp", "reference", "method", "externalId", "subscriptionId", "extra"].freeze,
+      T::Set[String]
+    )
+
     module_function
 
     # Encode dict as URL-safe base64 JSON (compact, no padding).
@@ -247,6 +255,14 @@ module Mpp
       extra = data["extra"]
       extra = nil unless extra.is_a?(Hash)
 
+      # Preserve any unknown top-level keys so they survive a parse/format round
+      # trip instead of being silently dropped.
+      extensions = {}
+      data.each do |key, value|
+        extensions[key] = value unless RECEIPT_BASE_FIELDS.include?(key)
+      end
+      extensions = nil if extensions.empty?
+
       Mpp::Receipt.new(
         status: status,
         timestamp: timestamp,
@@ -254,7 +270,8 @@ module Mpp
         method: method,
         external_id: data["externalId"]&.to_s,
         subscription_id: data["subscriptionId"]&.to_s,
-        extra: extra
+        extra: extra,
+        extensions: extensions
       )
     end
 
@@ -277,6 +294,12 @@ module Mpp
       payload["externalId"] = receipt.external_id if receipt.external_id
       payload["subscriptionId"] = receipt.subscription_id if receipt.subscription_id
       payload["extra"] = receipt.extra if receipt.extra
+
+      # Re-emit preserved extension keys at the top level. Base fields always
+      # win, so an extension can never overwrite one.
+      receipt.extensions&.each do |key, value|
+        payload[key] = value unless RECEIPT_BASE_FIELDS.include?(key)
+      end
 
       b64_encode(payload)
     end
