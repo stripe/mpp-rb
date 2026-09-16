@@ -592,7 +592,7 @@ class TestTempoChargeIntent < Minitest::Test
   def test_transaction_rejects_invalid_source_before_broadcast
     ["not-a-did", did_pkh(1, SENDER)].each do |source|
       credential = transaction_credential("0xabcdef", challenge_id: "challenge-123", source: source)
-      Mpp::Methods::Tempo::Rpc.stub(:call, ->(*) { flunk "invalid source must not reach RPC" }) do
+      Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_) { flunk "invalid source must not reach RPC" }) do
         assert_raises(Mpp::VerificationError) { @intent.validate(credential, request_hash) }
         assert_raises(Mpp::VerificationError) { @intent.broadcast(credential, request_hash) }
       end
