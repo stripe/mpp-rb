@@ -565,41 +565,28 @@ class TestTempoChargeIntent < Minitest::Test
     tx_hash = raw_transaction_hash(raw_tx)
     credential = transaction_credential(raw_tx, challenge_id: "challenge-123", source: did_pkh(CHAIN_ID, SENDER))
     receipt_data = receipt([transfer_log(memo: bound_memo)]).merge("from" => RELAYER)
-    Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, method, params) {
-      case method
-      when "eth_sendRawTransaction"
-        assert_equal [raw_tx], params
-        tx_hash
-      when "eth_getTransactionReceipt"
-        assert_equal [tx_hash], params
-        receipt_data
-      else
-        flunk "unexpected RPC method: #{method}"
-      end
-    }) do
+    rpc = Minitest::Mock.new
+    rpc.expect(:call, tx_hash, [@intent.rpc_url, "eth_sendRawTransaction", [raw_tx]])
+    rpc.expect(:call, receipt_data, [@intent.rpc_url, "eth_getTransactionReceipt", [tx_hash]])
+    Mpp::Methods::Tempo::Rpc.stub(:call, rpc) do
       assert_equal tx_hash, @intent.verify(credential, request_hash).reference
     end
+    rpc.verify
   end
 
   def test_transaction_rejects_source_differing_from_transfer_sender
     raw_tx = "0xabcdef"
     tx_hash = raw_transaction_hash(raw_tx)
     credential = transaction_credential(raw_tx, challenge_id: "challenge-123", source: did_pkh(CHAIN_ID, SOURCE_ADDR))
-    Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, method, params) {
-      case method
-      when "eth_sendRawTransaction"
-        assert_equal [raw_tx], params
-        tx_hash
-      when "eth_getTransactionReceipt"
-        assert_equal [tx_hash], params
-        receipt([transfer_log(memo: bound_memo)])
-      else
-        flunk "unexpected RPC method: #{method}"
-      end
-    }) do
+    receipt_data = receipt([transfer_log(memo: bound_memo)])
+    rpc = Minitest::Mock.new
+    rpc.expect(:call, tx_hash, [@intent.rpc_url, "eth_sendRawTransaction", [raw_tx]])
+    rpc.expect(:call, receipt_data, [@intent.rpc_url, "eth_getTransactionReceipt", [tx_hash]])
+    Mpp::Methods::Tempo::Rpc.stub(:call, rpc) do
       error = assert_raises(Mpp::VerificationError) { @intent.verify(credential, request_hash) }
       assert_match(/Transfer log/, error.message)
     end
+    rpc.verify
   end
 
   def test_transaction_rejects_invalid_source_before_broadcast
