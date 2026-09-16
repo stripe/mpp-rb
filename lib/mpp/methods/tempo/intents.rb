@@ -297,8 +297,7 @@ module Mpp
         def verify_transaction_receipt!(receipt_data, request, credential:)
           raise Mpp::VerificationError, "Transaction reverted" unless receipt_data["status"] == "0x1"
           source_address = parse_credential_source(credential.source, request.method_details.chain_id)
-          matched_logs = match_transfer_logs(receipt_data, request, expected_sender: source_address || receipt_data["from"],
-            source: credential.source, validate_sender: source_address ? @validate_sender : nil)
+          matched_logs = match_transfer_logs(receipt_data, request, expected_sender: source_address || receipt_data["from"])
           unless matched_logs.any?
             raise Mpp::VerificationError,
               "Transaction must contain a Transfer log matching request parameters"
