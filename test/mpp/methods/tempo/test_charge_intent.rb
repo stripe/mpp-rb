@@ -560,35 +560,74 @@ class TestTempoChargeIntent < Minitest::Test
     assert_match(/already been used/, error.message)
   end
 
-  def test_parse_hash_credential_source_absent_is_nil
-    assert_nil @intent.send(:parse_hash_credential_source, nil, CHAIN_ID)
-  end
-
-  def test_parse_hash_credential_source_valid_returns_address
-    source = did_pkh(CHAIN_ID, SOURCE_ADDR)
-    assert_equal SOURCE_ADDR, @intent.send(:parse_hash_credential_source, source, CHAIN_ID)
-  end
-
-  def test_parse_hash_credential_source_chain_mismatch_rejected
-    error = assert_raises(Mpp::VerificationError) do
-      @intent.send(:parse_hash_credential_source, did_pkh(1, SOURCE_ADDR), CHAIN_ID)
+  def test_transaction_accepts_source_matching_transfer_sender
+    raw_tx = "0xabcdef"
+    tx_hash = raw_transaction_hash(raw_tx)
+    credential = transaction_credential(raw_tx, challenge_id: "challenge-123", source: did_pkh(CHAIN_ID, SENDER))
+    receipt_data = receipt([transfer_log(memo: bound_memo)]).merge("from" => RELAYER)
+    rpc = Minitest::Mock.new
+    rpc.expect(:call, tx_hash, [@intent.rpc_url, "eth_sendRawTransaction", [raw_tx]])
+    rpc.expect(:call, receipt_data, [@intent.rpc_url, "eth_getTransactionReceipt", [tx_hash]])
+    Mpp::Methods::Tempo::Rpc.stub(:call, rpc) do
+      assert_equal tx_hash, @intent.verify(credential, request_hash).reference
     end
-    assert_match(/Hash credential source is invalid/, error.message)
+    rpc.verify
   end
 
-  def test_parse_hash_credential_source_accepts_string_chain_id
-    source = did_pkh(CHAIN_ID, SOURCE_ADDR)
-    assert_equal SOURCE_ADDR, @intent.send(:parse_hash_credential_source, source, CHAIN_ID.to_s)
-  end
-
-  def test_parse_hash_credential_source_rejects_non_numeric_chain_id
-    error = assert_raises(Mpp::VerificationError) do
-      @intent.send(:parse_hash_credential_source, did_pkh(CHAIN_ID, SOURCE_ADDR), "not-a-number")
+  def test_transaction_rejects_source_differing_from_transfer_sender
+    raw_tx = "0xabcdef"
+    tx_hash = raw_transaction_hash(raw_tx)
+    credential = transaction_credential(raw_tx, challenge_id: "challenge-123", source: did_pkh(CHAIN_ID, SOURCE_ADDR))
+    receipt_data = receipt([transfer_log(memo: bound_memo)])
+    rpc = Minitest::Mock.new
+    rpc.expect(:call, tx_hash, [@intent.rpc_url, "eth_sendRawTransaction", [raw_tx]])
+    rpc.expect(:call, receipt_data, [@intent.rpc_url, "eth_getTransactionReceipt", [tx_hash]])
+    Mpp::Methods::Tempo::Rpc.stub(:call, rpc) do
+      error = assert_raises(Mpp::VerificationError) { @intent.verify(credential, request_hash) }
+      assert_match(/Transfer log/, error.message)
     end
-    assert_match(/Hash credential source is invalid/, error.message)
+    rpc.verify
   end
 
-  def test_parse_hash_credential_source_rejects_malformed_variants
+  def test_transaction_rejects_invalid_source_before_broadcast
+    ["not-a-did", did_pkh(1, SENDER)].each do |source|
+      credential = transaction_credential("0xabcdef", challenge_id: "challenge-123", source: source)
+      Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_) { flunk "invalid source must not reach RPC" }) do
+        assert_raises(Mpp::VerificationError) { @intent.validate(credential, request_hash) }
+        assert_raises(Mpp::VerificationError) { @intent.broadcast(credential, request_hash) }
+      end
+    end
+  end
+
+  def test_parse_credential_source_absent_is_nil
+    assert_nil @intent.send(:parse_credential_source, nil, CHAIN_ID)
+  end
+
+  def test_parse_credential_source_valid_returns_address
+    source = did_pkh(CHAIN_ID, SOURCE_ADDR)
+    assert_equal SOURCE_ADDR, @intent.send(:parse_credential_source, source, CHAIN_ID)
+  end
+
+  def test_parse_credential_source_chain_mismatch_rejected
+    error = assert_raises(Mpp::VerificationError) do
+      @intent.send(:parse_credential_source, did_pkh(1, SOURCE_ADDR), CHAIN_ID)
+    end
+    assert_match(/Credential source is invalid/, error.message)
+  end
+
+  def test_parse_credential_source_accepts_string_chain_id
+    source = did_pkh(CHAIN_ID, SOURCE_ADDR)
+    assert_equal SOURCE_ADDR, @intent.send(:parse_credential_source, source, CHAIN_ID.to_s)
+  end
+
+  def test_parse_credential_source_rejects_non_numeric_chain_id
+    error = assert_raises(Mpp::VerificationError) do
+      @intent.send(:parse_credential_source, did_pkh(CHAIN_ID, SOURCE_ADDR), "not-a-number")
+    end
+    assert_match(/Credential source is invalid/, error.message)
+  end
+
+  def test_parse_credential_source_rejects_malformed_variants
     [
       "not-a-valid-did",
       "did:pkh:solana:#{CHAIN_ID}:#{SOURCE_ADDR}",
@@ -598,9 +637,9 @@ class TestTempoChargeIntent < Minitest::Test
       "did:pkh:eip155:#{CHAIN_ID}:not-an-address"
     ].each do |source|
       error = assert_raises(Mpp::VerificationError, "case: #{source}") do
-        @intent.send(:parse_hash_credential_source, source, CHAIN_ID)
+        @intent.send(:parse_credential_source, source, CHAIN_ID)
       end
-      assert_match(/Hash credential source is invalid/, error.message, "case: #{source}")
+      assert_match(/Credential source is invalid/, error.message, "case: #{source}")
     end
   end
 
@@ -678,7 +717,7 @@ class TestTempoChargeIntent < Minitest::Test
     error = assert_raises(Mpp::VerificationError) do
       verify_hash_source(receipt, source: did_pkh(1, SOURCE_ADDR))
     end
-    assert_match(/Hash credential source is invalid/, error.message)
+    assert_match(/Credential source is invalid/, error.message)
   end
 
   def test_hash_validate_sender_not_called_when_sender_matches
@@ -905,7 +944,7 @@ class TestTempoChargeIntent < Minitest::Test
     "0x#{Mpp::Methods::Tempo::Attribution.keccak256([raw_tx.delete_prefix("0x")].pack("H*")).unpack1("H*")}"
   end
 
-  def transaction_credential(raw_tx, challenge_id:)
+  def transaction_credential(raw_tx, challenge_id:, source: nil)
     Mpp::Credential.new(
       challenge: Mpp::ChallengeEcho.new(
         id: challenge_id,
@@ -914,7 +953,8 @@ class TestTempoChargeIntent < Minitest::Test
         intent: "charge",
         request: ""
       ),
-      payload: {"type" => "transaction", "signature" => raw_tx}
+      payload: {"type" => "transaction", "signature" => raw_tx},
+      source: source
     )
   end
 
