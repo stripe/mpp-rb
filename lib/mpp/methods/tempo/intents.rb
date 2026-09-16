@@ -149,27 +149,27 @@ module Mpp
           @rpc_url
         end
 
-        # Parse a hash credential source: nil if absent, the address for a
+        # Parse a credential source: nil if absent, the address for a
         # did:pkh:eip155 DID matching expected_chain_id, else raises.
-        def parse_hash_credential_source(source, expected_chain_id)
+        def parse_credential_source(source, expected_chain_id)
           return nil unless source
 
           expected_chain_id = begin
             Integer(expected_chain_id)
           rescue ArgumentError, TypeError
-            raise Mpp::VerificationError, "Hash credential source is invalid"
+            raise Mpp::VerificationError, "Credential source is invalid"
           end
 
           parsed = Proof.parse_source(source)
           unless parsed && parsed[:chain_id] == expected_chain_id
-            raise Mpp::VerificationError, "Hash credential source is invalid"
+            raise Mpp::VerificationError, "Credential source is invalid"
           end
 
           parsed[:address]
         end
 
         def validate_hash(payload, request, credential:)
-          source_address = parse_hash_credential_source(credential.source, request.method_details.chain_id)
+          source_address = parse_credential_source(credential.source, request.method_details.chain_id)
 
           rpc_url = get_rpc_url
           result = Rpc.call(rpc_url, "eth_getTransactionReceipt", [payload.hash])
@@ -296,7 +296,9 @@ module Mpp
 
         def verify_transaction_receipt!(receipt_data, request, credential:)
           raise Mpp::VerificationError, "Transaction reverted" unless receipt_data["status"] == "0x1"
-          matched_logs = match_transfer_logs(receipt_data, request, expected_sender: receipt_data["from"])
+          source_address = parse_credential_source(credential.source, request.method_details.chain_id)
+          matched_logs = match_transfer_logs(receipt_data, request, expected_sender: source_address || receipt_data["from"],
+            source: credential.source, validate_sender: source_address ? @validate_sender : nil)
           unless matched_logs.any?
             raise Mpp::VerificationError,
               "Transaction must contain a Transfer log matching request parameters"
@@ -391,6 +393,7 @@ module Mpp
         end
 
         def validate_transaction(payload, request, credential:)
+          parse_credential_source(credential.source, request.method_details.chain_id)
           validate_transaction_payload(payload.signature, request, challenge: credential.challenge)
           if request.method_details.fee_payer
             payer = fee_payer
