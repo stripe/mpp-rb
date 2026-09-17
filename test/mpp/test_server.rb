@@ -392,6 +392,13 @@ class TestMppHandler < Minitest::Test
     assert_equal "0x742d35Cc6634c0532925a3b844bC9e7595F8fE00", result.request["recipient"]
   end
 
+  def test_charge_rejects_custom_tempo_memo
+    method = MockMethod.new(intents: {"charge" => MockIntent.new})
+    handler = Mpp.create(method: method, realm: "test", secret_key: "secret")
+    error = assert_raises(ArgumentError) { handler.charge(nil, "1", memo: "0x#{"ab" * 32}") }
+    assert_match(/Custom Tempo charge memos are not supported/, error.message)
+  end
+
   def test_charge_with_fee_payer
     intent = MockIntent.new
     method = MockMethod.new(

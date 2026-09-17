@@ -104,6 +104,5 @@ class TestSchemas < Minitest::Test
     assert_equal 4217, md.chain_id
     refute md.fee_payer
     assert_nil md.fee_payer_url
-    assert_nil md.memo
   end
 end

@@ -7,8 +7,8 @@ module Mpp
       module Schemas
         HEX_PATTERN = /\A0x[a-fA-F0-9]+\z/
 
-        MethodDetails = Data.define(:chain_id, :fee_payer, :fee_payer_url, :memo) do
-          def initialize(chain_id: 4217, fee_payer: false, fee_payer_url: nil, memo: nil)
+        MethodDetails = Data.define(:chain_id, :fee_payer, :fee_payer_url) do
+          def initialize(chain_id: 4217, fee_payer: false, fee_payer_url: nil)
             super
           end
 
@@ -18,8 +18,7 @@ module Mpp
             new(
               chain_id: hash["chainId"] || 4217,
               fee_payer: hash["feePayer"] || false,
-              fee_payer_url: hash["feePayerUrl"],
-              memo: hash["memo"]
+              fee_payer_url: hash["feePayerUrl"]
             )
           end
         end
