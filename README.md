@@ -326,10 +326,6 @@ Tempo charge transaction construction is implemented directly in Ruby. Runtime d
 
 `Mpp.create` accepts a single `method:` (unchanged) or `methods:` to register several payment methods. `server.compose` presents every method as multiple `WWW-Authenticate` challenges; `evm.charge` also emits `PAYMENT-REQUIRED` and accepts `PAYMENT-SIGNATURE` when a facilitator is configured. The Ruby HTTP client does not yet sign EVM or x402 credentials.
 
-### Tempo charge memos
-
-Custom charge memos are no longer supported. Remove `memo:` from `charge` calls; clients generate challenge-bound attribution memos automatically.
-
 ## Protocol
 
 Built on the ["Payment" HTTP Authentication Scheme](https://datatracker.ietf.org/doc/draft-ryan-httpauth-payment/). See [mpp-specs](https://tempoxyz.github.io/mpp-specs/) for the full specification.
