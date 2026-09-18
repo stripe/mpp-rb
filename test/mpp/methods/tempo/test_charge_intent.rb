@@ -77,7 +77,7 @@ class TestTempoChargeIntent < Minitest::Test
           intent: "charge", request: ""),
         payload: {"type" => type, "hash" => HASH, "signature" => "0x76"}
       )
-      Mpp::Methods::Tempo::Rpc.stub(:call, ->(*) { flunk "must reject before RPC" }) do
+      Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_args) { flunk "must reject before RPC" }) do
         error = assert_raises(Mpp::VerificationError) { @intent.public_send(operation, credential, request) }
         assert_match(/Explicit memos are not supported/, error.message)
       end
