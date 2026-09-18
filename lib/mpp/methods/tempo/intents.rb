@@ -187,7 +187,7 @@ module Mpp
             raise Mpp::VerificationError,
               "Transaction must contain a Transfer log matching request parameters"
           end
-          assert_challenge_bound_memo(matched_logs, credential.challenge) unless request.method_details.memo
+          assert_challenge_bound_memo(matched_logs, credential.challenge)
 
           Mpp::Receipt.success(payload.hash)
         end
@@ -302,7 +302,7 @@ module Mpp
             raise Mpp::VerificationError,
               "Transaction must contain a Transfer log matching request parameters"
           end
-          assert_challenge_bound_memo(matched_logs, credential.challenge) unless request.method_details.memo
+          assert_challenge_bound_memo(matched_logs, credential.challenge)
         end
 
         def verify_transfer_logs(receipt, request, expected_sender: nil)
@@ -310,7 +310,6 @@ module Mpp
         end
 
         def match_transfer_logs(receipt, request, expected_sender: nil, source: nil, validate_sender: nil)
-          expected_memo = request.method_details.memo
           matched_logs = []
 
           (receipt["logs"] || []).each do |log|
@@ -325,41 +324,25 @@ module Mpp
             next unless to_address.downcase == request.recipient.downcase
 
             matched =
-              if expected_memo
-                next unless topics[0] == TRANSFER_WITH_MEMO_TOPIC
+              case topics[0]
+              when TRANSFER_WITH_MEMO_TOPIC
                 next if topics.length < 4
 
                 data = log.fetch("data", "0x")
                 next if data.length < 66
 
                 amount = data[2, 64].to_i(16)
-                memo = topics[3]
-                memo_clean = expected_memo.downcase
-                memo_clean = "0x#{memo_clean}" unless memo_clean.start_with?("0x")
-                next unless amount == Integer(request.amount) && memo.downcase == memo_clean
+                next unless amount == Integer(request.amount)
 
-                {kind: :memo, memo: memo}
-              else
-                case topics[0]
-                when TRANSFER_WITH_MEMO_TOPIC
-                  next if topics.length < 4
+                {kind: :memo, memo: topics[3]}
+              when TRANSFER_TOPIC
+                data = log.fetch("data", "0x")
+                next if data.length < 66
 
-                  data = log.fetch("data", "0x")
-                  next if data.length < 66
+                amount = data.delete_prefix("0x").to_i(16)
+                next unless amount == Integer(request.amount)
 
-                  amount = data[2, 64].to_i(16)
-                  next unless amount == Integer(request.amount)
-
-                  {kind: :memo, memo: topics[3]}
-                when TRANSFER_TOPIC
-                  data = log.fetch("data", "0x")
-                  next if data.length < 66
-
-                  amount = data.delete_prefix("0x").to_i(16)
-                  next unless amount == Integer(request.amount)
-
-                  {kind: :transfer}
-                end
+                {kind: :transfer}
               end
 
             next unless matched
@@ -489,13 +472,8 @@ module Mpp
           return false if call_data_hex.length < 136
 
           selector = call_data_hex[0, 8].downcase
-          expected_memo = request.method_details.memo
 
-          if expected_memo
-            return false unless selector == TRANSFER_WITH_MEMO_SELECTOR
-          elsif selector != TRANSFER_WITH_MEMO_SELECTOR
-            return false
-          end
+          return false unless selector == TRANSFER_WITH_MEMO_SELECTOR
 
           decoded_to = "0x#{call_data_hex[32, 40]}"
           decoded_amount = call_data_hex[72, 64].to_i(16)
@@ -504,18 +482,11 @@ module Mpp
           return false unless decoded_amount == Integer(request.amount)
           return false if call_data_hex.length < 200
 
-          if expected_memo
-            decoded_memo = "0x#{call_data_hex[136, 64]}"
-            memo_clean = expected_memo.downcase
-            memo_clean = "0x#{memo_clean}" unless memo_clean.start_with?("0x")
-            return false unless decoded_memo.downcase == memo_clean
-          else
-            return false unless challenge
+          return false unless challenge
 
-            decoded_memo = "0x#{call_data_hex[136, 64]}"
-            return false unless Attribution.verify_server(decoded_memo, challenge.realm)
-            return false unless Attribution.verify_challenge_binding(decoded_memo, challenge.id)
-          end
+          decoded_memo = "0x#{call_data_hex[136, 64]}"
+          return false unless Attribution.verify_server(decoded_memo, challenge.realm)
+          return false unless Attribution.verify_challenge_binding(decoded_memo, challenge.id)
 
           true
         end

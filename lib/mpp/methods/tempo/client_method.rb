@@ -82,8 +82,7 @@ module Mpp
             nonce_key = nonce_key.start_with?("0x") ? nonce_key.to_i(16) : nonce_key.to_i
           end
 
-          memo = method_details["memo"]
-          memo ||= Attribution.encode(server_id: challenge.realm, client_id: @client_id, challenge_id: challenge.id)
+          memo = Attribution.encode(server_id: challenge.realm, client_id: @client_id, challenge_id: challenge.id)
 
           # Resolve RPC URL from challenge's chainId. Normalize the configured pin
           # once (it may be a String from ENV/config) so it compares equal to

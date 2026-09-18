@@ -63,17 +63,6 @@ class TestTempoChargeIntent < Minitest::Test
     assert_match(/memo is not bound to this challenge/, error.message)
   end
 
-  def test_hash_with_explicit_memo_accepts_exact_memo
-    explicit_memo = "0x#{"ab" * 32}"
-    result = verify_hash(
-      receipt([transfer_log(memo: explicit_memo)]),
-      challenge_id: "challenge-123",
-      memo: explicit_memo
-    )
-
-    assert_equal HASH, result.reference
-  end
-
   def test_initialize_rejects_nil_store
     error = assert_raises(ArgumentError) do
       Mpp::Methods::Tempo::ChargeIntent.new(store: nil)
@@ -731,17 +720,15 @@ class TestTempoChargeIntent < Minitest::Test
   end
 
   def test_hash_validate_sender_not_called_for_non_candidate_logs
-    explicit_memo = "0x#{"ab" * 32}"
-    other_memo = "0x#{"cd" * 32}"
     intent = Mpp::Methods::Tempo::ChargeIntent.new(
       rpc_url: "https://rpc.example.test",
       validate_sender: ->(expected_sender:, sender:, source:) { raise "must not be called" }
     )
-    # First log has a wrong sender and a non-matching memo (non-candidate);
+    # First log has a wrong sender and a non-matching amount (non-candidate);
     # second log matches fully, so the callback is never reached.
     receipt = receipt([
-      transfer_log(memo: other_memo, from: RELAYER),
-      transfer_log(memo: explicit_memo, from: SOURCE_ADDR)
+      transfer_log(memo: bound_memo, from: RELAYER).merge("data" => "0x#{1.to_s(16).rjust(64, "0")}"),
+      transfer_log(memo: bound_memo, from: SOURCE_ADDR)
     ])
     credential = Mpp::Credential.new(
       challenge: Mpp::ChallengeEcho.new(id: "challenge-123", realm: REALM, method: "tempo",
@@ -750,7 +737,7 @@ class TestTempoChargeIntent < Minitest::Test
       source: did_pkh(CHAIN_ID, SOURCE_ADDR)
     )
     result = Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, _method, _params) { receipt }) do
-      intent.verify(credential, request_hash(memo: explicit_memo))
+      intent.verify(credential, request_hash)
     end
     assert_equal HASH, result.reference
   end
@@ -958,7 +945,7 @@ class TestTempoChargeIntent < Minitest::Test
     )
   end
 
-  def verify_hash(receipt, challenge_id:, memo: nil)
+  def verify_hash(receipt, challenge_id:)
     credential = Mpp::Credential.new(
       challenge: Mpp::ChallengeEcho.new(
         id: challenge_id,
@@ -975,18 +962,16 @@ class TestTempoChargeIntent < Minitest::Test
       assert_equal [HASH], params
       receipt
     }) do
-      @intent.verify(credential, request_hash(memo: memo))
+      @intent.verify(credential, request_hash)
     end
   end
 
-  def request_hash(memo: nil)
-    request = {
+  def request_hash
+    {
       "amount" => "1000",
       "currency" => CURRENCY,
       "recipient" => RECIPIENT
     }
-    request["methodDetails"] = {"memo" => memo} if memo
-    request
   end
 
   def receipt(logs)

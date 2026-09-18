@@ -23,8 +23,7 @@ class TempoLiveIntegrationTest < Minitest::Test
   def test_transaction_credential_verifies_against_live_node
     payer = funded_account
     recipient = funded_account
-    memo = Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: "tx-#{SecureRandom.hex(6)}")
-    challenge = challenge_for(recipient: recipient.address, memo: memo)
+    challenge = challenge_for(recipient: recipient.address)
 
     credential = client_method(account: payer).create_credential(challenge)
     intent = charge_intent
@@ -72,13 +71,12 @@ class TempoLiveIntegrationTest < Minitest::Test
   def test_hash_credential_verifies_live_transfer
     payer = funded_account
     recipient = funded_account
-    memo = Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: "hash-#{SecureRandom.hex(6)}")
-    challenge = challenge_for(recipient: recipient.address, memo: memo)
+    challenge = challenge_for(recipient: recipient.address)
     tx_hash = send_transfer(
       account: payer,
       recipient: recipient.address,
       amount: 1_000_000,
-      memo: memo
+      memo: Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: challenge.id)
     )
     credential = Mpp::Credential.new(
       challenge: challenge.to_echo,
@@ -95,13 +93,12 @@ class TempoLiveIntegrationTest < Minitest::Test
   def test_hash_credential_replay_rejected_with_store
     payer = funded_account
     recipient = funded_account
-    memo = Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: "replay-#{SecureRandom.hex(6)}")
-    challenge = challenge_for(recipient: recipient.address, memo: memo)
+    challenge = challenge_for(recipient: recipient.address)
     tx_hash = send_transfer(
       account: payer,
       recipient: recipient.address,
       amount: 1_000_000,
-      memo: memo
+      memo: Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: challenge.id)
     )
     credential = Mpp::Credential.new(
       challenge: challenge.to_echo,
@@ -231,9 +228,8 @@ class TempoLiveIntegrationTest < Minitest::Test
     Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: RPC_URL, **opts)
   end
 
-  def challenge_for(recipient:, memo: nil)
+  def challenge_for(recipient:)
     method_details = {"chainId" => chain_id}
-    method_details["memo"] = memo if memo
 
     Mpp::Challenge.create(
       secret_key: SECRET_KEY,
@@ -264,7 +260,6 @@ class TempoLiveIntegrationTest < Minitest::Test
       )
       @sponsored = !fee_payer.nil?
       @handler = Mpp.create(method: method, realm: REALM, secret_key: SECRET_KEY)
-      @memo = Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: SecureRandom.hex(6))
       @server = TCPServer.new("127.0.0.1", 0)
       @url = "http://127.0.0.1:#{@server.addr[1]}/paid"
       @thread = Thread.new { serve }
@@ -303,7 +298,6 @@ class TempoLiveIntegrationTest < Minitest::Test
         headers["authorization"],
         "1.00",
         chain_id: chain_id,
-        memo: @memo,
         fee_payer: @sponsored
       )
       if result.is_a?(Mpp::Challenge)

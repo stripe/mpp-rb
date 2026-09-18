@@ -216,7 +216,6 @@ module Mpp
         currency = kwargs[:currency]
         recipient = kwargs[:recipient]
         external_id = kwargs[:external_id]
-        memo = kwargs[:memo]
         fee_payer = if kwargs.key?(:fee_payer)
           kwargs[:fee_payer]
         else
@@ -257,10 +256,9 @@ module Mpp
         resolved_chain_id = chain_id
         resolved_chain_id ||= method.chain_id if method.respond_to?(:chain_id)
 
-        if memo || fee_payer || !resolved_chain_id.nil?
+        if fee_payer || !resolved_chain_id.nil?
           method_details = {}
           method_details["chainId"] = resolved_chain_id unless resolved_chain_id.nil?
-          method_details["memo"] = memo if memo
           method_details["feePayer"] = true if fee_payer
           request["methodDetails"] = method_details
         end
