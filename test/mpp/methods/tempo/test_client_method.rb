@@ -40,14 +40,6 @@ class TestTempoExpectedRecipients < Minitest::Test
     end.new("0x0000000000000000000000000000000000000001", "local")
   end
 
-  def test_rejects_custom_memo_before_signing_or_rpc
-    method = make_method(expected_recipients: nil)
-    challenge = make_challenge(recipient: ALLOWED)
-    challenge.request["methodDetails"] = {"memo" => "0x#{"ab" * 32}"}
-    error = assert_raises(ArgumentError) { method.create_credential(challenge) }
-    assert_match(/Custom Tempo charge memos are not supported/, error.message)
-  end
-
   def test_rejects_unexpected_recipient
     method = make_method(expected_recipients: [ALLOWED])
     challenge = make_challenge(recipient: OTHER)

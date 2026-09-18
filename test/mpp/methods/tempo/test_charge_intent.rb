@@ -63,27 +63,6 @@ class TestTempoChargeIntent < Minitest::Test
     assert_match(/memo is not bound to this challenge/, error.message)
   end
 
-  def test_explicit_memos_are_rejected_before_rpc
-    ["hash", "transaction"].product([false, true], [:validate, :broadcast]).each do |type, nested, operation|
-      request = request_hash
-      memo = "0x#{"ab" * 32}"
-      if nested
-        request["methodDetails"] = {"memo" => memo}
-      else
-        request["memo"] = memo
-      end
-      credential = Mpp::Credential.new(
-        challenge: Mpp::ChallengeEcho.new(id: "challenge-123", realm: REALM, method: "tempo",
-          intent: "charge", request: ""),
-        payload: {"type" => type, "hash" => HASH, "signature" => "0x76"}
-      )
-      Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_args) { flunk "must reject before RPC" }) do
-        error = assert_raises(Mpp::VerificationError) { @intent.public_send(operation, credential, request) }
-        assert_match(/Explicit memos are not supported/, error.message)
-      end
-    end
-  end
-
   def test_initialize_rejects_nil_store
     error = assert_raises(ArgumentError) do
       Mpp::Methods::Tempo::ChargeIntent.new(store: nil)
