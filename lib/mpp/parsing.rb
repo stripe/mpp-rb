@@ -58,10 +58,17 @@ module Mpp
     def parse_auth_params(params_str)
       params = {}
       params_str.scan(AUTH_PARAM_RE) do |key, quoted_val, token_val|
-        Kernel.raise Mpp::ParseError, "Duplicate parameter: #{key}" if params.key?(key)
+        # Auth-parameter names are case-insensitive (RFC 9110 §11.2). Normalize
+        # to lowercase for both the duplicate check and storage, so "id" and
+        # "ID" are treated as the same parameter -- otherwise both get stored
+        # under their original casing and only the lowercase lookup downstream
+        # is ever read, silently ignoring the other value instead of rejecting
+        # the ambiguous header.
+        normalized_key = key.downcase
+        Kernel.raise Mpp::ParseError, "Duplicate parameter: #{key}" if params.key?(normalized_key)
 
         value = quoted_val.nil? ? token_val : unescape_quoted(quoted_val)
-        params[key] = value
+        params[normalized_key] = value
       end
       params
     end
