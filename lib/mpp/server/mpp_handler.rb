@@ -213,13 +213,10 @@ module Mpp
       # Build the canonical charge request for a method without verifying.
       sig { params(method: T.untyped, amount: String, kwargs: T.untyped).returns(T::Hash[String, T.untyped]) }
       def build_charge_request(method, amount, **kwargs)
-        if method.name == "tempo" && !kwargs[:memo].nil?
-          raise ArgumentError, "Custom Tempo charge memos are not supported"
-        end
         currency = kwargs[:currency]
         recipient = kwargs[:recipient]
         external_id = kwargs[:external_id]
-        memo = kwargs[:memo]
+        memo = kwargs[:memo] unless method.name == "tempo"
         fee_payer = if kwargs.key?(:fee_payer)
           kwargs[:fee_payer]
         else

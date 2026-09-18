@@ -328,7 +328,7 @@ Tempo charge transaction construction is implemented directly in Ruby. Runtime d
 
 ### Tempo charge memos
 
-Custom charge memos are no longer supported. Remove `memo:` from `charge` calls; clients generate challenge-bound attribution memos automatically. Direct verification rejects explicit memos before any RPC call or transaction broadcast.
+Custom charge memos are no longer supported. Remove `memo:` from `charge` calls; clients generate challenge-bound attribution memos automatically.
 
 ## Protocol
 

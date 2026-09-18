@@ -73,10 +73,6 @@ module Mpp
           method_details = request["methodDetails"]
           method_details = {} unless method_details.is_a?(Hash)
 
-          unless request["memo"].nil? && method_details["memo"].nil?
-            raise ArgumentError, "Custom Tempo charge memos are not supported"
-          end
-
           validate_recipients(request, method_details) if @expected_recipients
 
           use_fee_payer = method_details.fetch("feePayer", false)

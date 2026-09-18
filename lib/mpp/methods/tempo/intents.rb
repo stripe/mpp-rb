@@ -106,11 +106,6 @@ module Mpp
         end
 
         def resolve_request(credential, request)
-          method_details = request["methodDetails"]
-          explicit_memo = !request["memo"].nil? || (method_details.is_a?(Hash) && !method_details["memo"].nil?)
-          if !relay && explicit_memo
-            raise Mpp::VerificationError, "Explicit memos are not supported for direct Tempo charge verification"
-          end
           req = Schemas::ChargeRequest.from_hash(request)
 
           # Check challenge expiry
