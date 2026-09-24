@@ -215,9 +215,21 @@ module Mpp
           unless @store.put_if_absent(store_key, TRANSACTION_PENDING)
             raise Mpp::VerificationError, "Transaction hash already used" unless @store.get(store_key) == TRANSACTION_PENDING
 
+            raw_store_key = store_key
+            canonical_hash = @store.get("#{store_key}:canonical")
+            if canonical_hash
+              reserved_tx_hash = canonical_hash
+              store_key = "mpp:charge:#{canonical_hash}"
+              unless @store.get(store_key) == TRANSACTION_PENDING
+                @store.put(raw_store_key, TRANSACTION_VERIFIED)
+                raise Mpp::VerificationError, "Transaction hash already used"
+              end
+            end
+
             receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
             verify_transaction_receipt!(receipt_data, request, credential: credential)
             @store.put(store_key, TRANSACTION_VERIFIED)
+            @store.put(raw_store_key, TRANSACTION_VERIFIED) if raw_store_key != store_key
             return Mpp::Receipt.success(reserved_tx_hash)
           end
 
@@ -257,6 +269,11 @@ module Mpp
           # rebroadcast the same payload.
           raw_store_key = store_key
           store_key, reserved_tx_hash = rebase_reservation_to_chain_hash(store_key, reserved_tx_hash, tx_hash)
+          if raw_store_key != store_key
+            # Persist the RPC hash separately so a retry cannot overwrite a
+            # replay marker finalized by another verifier.
+            @store.put("#{raw_store_key}:canonical", reserved_tx_hash)
+          end
 
           receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
           verify_transaction_receipt!(receipt_data, request, credential: credential)
