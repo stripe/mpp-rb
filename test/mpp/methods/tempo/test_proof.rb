@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "webmock/minitest"
 
 # Tests for EIP-712 Tempo proof credentials (zero-amount wallet-ownership proofs).
 # The signed typed data binds both the challenge id AND the server realm, and the
@@ -315,6 +316,95 @@ class TestTempoProof < Minitest::Test
       challenge_id: challenge.id,
       realm: "evil.example.com",
       signature: credential.payload["signature"]
+    )
+  end
+
+  def test_automatically_signs_zero_amount_proofs_without_rpc
+    skip "eth gem not available" unless @eth_available
+
+    acct = account(KEY_A)
+    [nil, :pull, :push, :proof].each do |mode|
+      [4217, 42431, 12345].each do |chain_id|
+        method = Mpp::Methods::Tempo::TempoMethod.new(account: acct)
+        challenge = automatic_challenge(amount: "0", chain_id: chain_id)
+
+        credential = method.create_credential(challenge, mode: mode)
+
+        assert_equal "proof", credential.payload["type"]
+        assert Proof.verify(address: acct.address, chain_id: chain_id,
+          challenge_id: challenge.id, realm: challenge.realm,
+          signature: credential.payload["signature"])
+      end
+    end
+    assert_not_requested(:post, %r{https?://})
+  end
+
+  def test_automatic_proof_preserves_chain_pin
+    skip "eth gem not available" unless @eth_available
+
+    method = Mpp::Methods::Tempo::TempoMethod.new(account: account(KEY_A), chain_id: 4217)
+    credential = method.create_credential(automatic_challenge(amount: "0", chain_id: nil))
+    assert_equal 4217, Proof.parse_source(credential.source)[:chain_id]
+
+    assert_raises(Mpp::Methods::Tempo::TransactionError) do
+      method.create_credential(automatic_challenge(amount: "0", chain_id: 42431))
+    end
+    assert_not_requested(:post, %r{https?://})
+  end
+
+  def test_automatic_proof_requires_chain_id
+    skip "eth gem not available" unless @eth_available
+
+    method = Mpp::Methods::Tempo::TempoMethod.new(account: account(KEY_A))
+    assert_raises(ArgumentError) do
+      method.create_credential(automatic_challenge(amount: "0", chain_id: nil))
+    end
+    assert_not_requested(:post, %r{https?://})
+  end
+
+  def test_positive_amount_still_builds_transaction
+    skip "eth gem not available" unless @eth_available
+
+    method = Mpp::Methods::Tempo::TempoMethod.new(account: account(KEY_A), chain_id: 4217)
+    method.stub(:build_tempo_transfer, ["0x1234", 4217]) do
+      credential = method.create_credential(automatic_challenge(amount: "1", chain_id: 4217))
+      assert_equal({"type" => "transaction", "signature" => "0x1234"}, credential.payload)
+    end
+  end
+
+  def test_transport_automatically_completes_zero_amount_challenge
+    skip "eth gem not available" unless @eth_available
+
+    method = Mpp::Methods::Tempo::TempoMethod.new(account: account(KEY_A))
+    challenge = automatic_challenge(amount: "0", chain_id: 4217)
+    captured = nil
+    stub_request(:get, "https://api.example.com/proof")
+      .to_return(status: 402, headers: {"WWW-Authenticate" => challenge.to_www_authenticate(REALM)})
+    stub_request(:get, "https://api.example.com/proof")
+      .with { |request| request.headers["Authorization"]&.start_with?("Payment ") }
+      .to_return do |request|
+        captured = Mpp::Credential.from_authorization(request.headers.fetch("Authorization"))
+        {status: 200, body: "authenticated"}
+      end
+
+    response = Mpp::Client::Transport.new(methods: [method]).get("https://api.example.com/proof")
+
+    assert_equal "200", response.code
+    assert_equal "proof", captured.payload["type"]
+    intent = Mpp::Methods::Tempo::ChargeIntent.new
+    assert_equal "success", intent.verify(captured, challenge.request).status
+    assert_requested(:get, "https://api.example.com/proof", times: 2)
+    assert_not_requested(:post, %r{https?://})
+  end
+
+  private
+
+  def automatic_challenge(amount:, chain_id:)
+    Mpp::Challenge.create(
+      secret_key: "test-secret", realm: REALM, method: "tempo", intent: "charge",
+      request: {"amount" => amount, "currency" => "0x00", "recipient" => "0x01",
+                "methodDetails" => chain_id ? {"chainId" => chain_id} : {}},
+      expires: Mpp::Expires.minutes(5)
     )
   end
 end

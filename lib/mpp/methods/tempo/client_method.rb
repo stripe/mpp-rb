@@ -61,15 +61,17 @@ module Mpp
 
         # Create a credential to satisfy the given challenge.
         #
-        # mode: :pull (default) — return signed transaction for server to broadcast
+        # mode: nil — automatically use proof for zero amounts, pull otherwise
+        #        :pull — return signed transaction for server to broadcast
         #        :push — broadcast on-chain, return transaction hash
-        #        :proof — zero-amount transaction proving account ownership
+        #        :proof — sign a zero-amount account-ownership proof
         def create_credential(challenge, mode: nil)
           raise ArgumentError, "No account configured for signing" unless @account
           raise ArgumentError, "Unsupported intent: #{challenge.intent}" unless challenge.intent == "charge"
 
-          mode ||= :pull
           request = challenge.request
+          mode = :proof if Integer(request.fetch("amount")).zero?
+          mode ||= :pull
           method_details = request["methodDetails"]
           method_details = {} unless method_details.is_a?(Hash)
 
@@ -113,7 +115,7 @@ module Mpp
 
           # Proof mode: sign EIP-712 typed data (no transaction needed)
           if mode == :proof
-            chain_id = expected_chain_id || @chain_id
+            chain_id = expected_chain_id || parsed_chain_id || @chain_id
             raise ArgumentError, "chain_id required for proof mode" unless chain_id
 
             signature = Proof.sign(
