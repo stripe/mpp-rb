@@ -17,6 +17,7 @@ module Mpp
       TRANSFER_WITH_MEMO_TOPIC = "0x57bc7354aa85aed339e000bccffabbc529466af35f0772c8f8ee1145927de7f0"
       TRANSACTION_PENDING = "transaction:pending"
       TRANSACTION_VERIFIED = "transaction:verified"
+      CHALLENGE_MEMO_ERROR = "Payment verification failed: no matching payment call found with a memo bound to this challenge"
 
       # Tempo charge intent for server-side verification.
       class ChargeIntent
@@ -373,14 +374,14 @@ module Mpp
 
             unless Attribution.verify_server(memo, challenge.realm) &&
                 Attribution.verify_challenge_binding(memo, challenge.id)
-              raise Mpp::VerificationError, "Payment verification failed: memo is not bound to this challenge"
+              raise Mpp::VerificationError, CHALLENGE_MEMO_ERROR
             end
             bound = true
           end
 
           return if bound
 
-          raise Mpp::VerificationError, "Payment verification failed: memo is not bound to this challenge"
+          raise Mpp::VerificationError, CHALLENGE_MEMO_ERROR
         end
 
         def validate_transaction(payload, request, credential:)

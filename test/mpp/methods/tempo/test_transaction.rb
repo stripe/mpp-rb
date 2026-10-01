@@ -478,7 +478,7 @@ class TestTempoTransaction < Minitest::Test
       )
     end
 
-    assert_includes error.message, "memo is not bound to this challenge"
+    assert_includes error.message, "no matching payment call found"
   end
 
   def test_charge_intent_rejects_fee_payer_envelope_with_wrong_challenge_memo
@@ -509,7 +509,7 @@ class TestTempoTransaction < Minitest::Test
       )
     end
 
-    assert_includes error.message, "memo is not bound to this challenge"
+    assert_includes error.message, "no matching payment call found"
   end
 
   def test_charge_intent_rejects_fee_payer_envelope_with_wrong_chain_id

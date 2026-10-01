@@ -36,7 +36,7 @@ class TestTempoChargeIntent < Minitest::Test
       verify_hash(receipt([transfer_log]), challenge_id: "challenge-123")
     end
 
-    assert_match(/memo is not bound to this challenge/, error.message)
+    assert_match(/no matching payment call found/, error.message)
   end
 
   def test_hash_without_explicit_memo_rejects_wrong_challenge_nonce
@@ -49,7 +49,7 @@ class TestTempoChargeIntent < Minitest::Test
       verify_hash(receipt([transfer_log(memo: memo), transfer_log]), challenge_id: "challenge-xyz")
     end
 
-    assert_match(/memo is not bound to this challenge/, error.message)
+    assert_match(/no matching payment call found/, error.message)
   end
 
   def test_hash_without_explicit_memo_rejects_wrong_realm
@@ -62,7 +62,7 @@ class TestTempoChargeIntent < Minitest::Test
       verify_hash(receipt([transfer_log(memo: memo), transfer_log]), challenge_id: "challenge-123")
     end
 
-    assert_match(/memo is not bound to this challenge/, error.message)
+    assert_match(/no matching payment call found/, error.message)
   end
 
   def test_hash_accepts_split_transfers_in_any_order
