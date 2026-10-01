@@ -16,7 +16,7 @@ class TestTempoTransaction < Minitest::Test
   REALM = "api.example.com"
   CHALLENGE_ID = "challenge-123"
 
-  def test_build_signed_transfer_requires_eth_and_rlp
+  def test_build_signed_transfer_requires_only_default_rlp
     original_require = Kernel.method(:require)
     Kernel.stub(:require, lambda { |name|
       raise LoadError, "cannot load such file -- #{name}" if %w[eth rlp].include?(name)
@@ -37,7 +37,82 @@ class TestTempoTransaction < Minitest::Test
         )
       end
 
-      assert_includes error.message, "eth gem"
+      assert_includes error.message, "rlp gem"
+    end
+  end
+
+  def test_custom_codec_and_signer_do_not_require_eth_or_rlp
+    require "rlp"
+    codec = Object.new
+    codec.define_singleton_method(:encode) { |value| RLP.encode(value) }
+    codec.define_singleton_method(:decode) { |value| RLP.decode(value) }
+    original_require = Kernel.method(:require)
+
+    Kernel.stub(:require, lambda { |name|
+      raise LoadError, "unexpected dependency: #{name}" if %w[eth rlp].include?(name)
+
+      original_require.call(name)
+    }) do
+      raw_tx, = Mpp::Methods::Tempo::Transaction.build_signed_transfer(
+        account: FakeAccount.new(ACCOUNT, "\x11" * 64 + "\x1b"),
+        chain_id: 42_431,
+        gas_limit: 1_000_000,
+        gas_price: 1,
+        nonce: 0,
+        nonce_key: 0,
+        currency: CURRENCY,
+        transfer_data: transfer_data,
+        rlp: codec
+      )
+
+      assert raw_tx.start_with?("0x76")
+    end
+  end
+
+  def test_malformed_external_signature_fails_before_returning_transaction
+    error = assert_raises(ArgumentError) do
+      Mpp::Methods::Tempo::Transaction.build_signed_transfer(
+        account: FakeAccount.new(ACCOUNT, "too short"),
+        chain_id: 42_431,
+        gas_limit: 1_000_000,
+        gas_price: 1,
+        nonce: 0,
+        nonce_key: 0,
+        currency: CURRENCY,
+        transfer_data: transfer_data
+      )
+    end
+
+    assert_includes error.message, "signature must be 65 bytes"
+  end
+
+  def test_injected_codec_has_byte_parity_for_all_sponsorship_modes
+    skip "rlp gem not available" unless rlp_available?
+    codec = Object.new
+    codec.define_singleton_method(:encode) { |value| RLP.encode(value) }
+    codec.define_singleton_method(:decode) { |value| RLP.decode(value) }
+    sender = FakeAccount.new(ACCOUNT, "\x11" * 64 + "\x1b")
+
+    [
+      {},
+      {awaiting_fee_payer: true}
+    ].each do |options|
+      arguments = {
+        account: sender,
+        chain_id: 42_431,
+        gas_limit: 1_000_000,
+        gas_price: 1,
+        nonce: options.empty? ? 7 : 0,
+        nonce_key: options.empty? ? 0 : (1 << 256) - 1,
+        currency: CURRENCY,
+        transfer_data: transfer_data,
+        valid_before: options.empty? ? nil : Time.now.to_i + 60,
+        **options
+      }
+      default_raw, = Mpp::Methods::Tempo::Transaction.build_signed_transfer(**arguments)
+      custom_raw, = Mpp::Methods::Tempo::Transaction.build_signed_transfer(**arguments, rlp: codec)
+
+      assert_equal default_raw, custom_raw
     end
   end
 

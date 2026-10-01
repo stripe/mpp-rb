@@ -261,6 +261,57 @@ transport = Mpp::Client::Transport.new(
 response = transport.request(:get, "https://mpp.dev/api/ping/paid")
 ```
 
+`Account.from_key` is the built-in signer. Client transactions also accept any
+wallet with this interface:
+
+```ruby
+wallet.address             # 0x-prefixed address
+wallet.sign_hash(hash)     # 32-byte hash -> 65-byte r || s || v
+```
+
+You can keep RPC and RLP inside your application by injecting providers. The
+RPC provider implements `call(rpc_url, method, params)`. The RLP codec implements
+`encode(value)` and `decode(bytes)`.
+
+```ruby
+method = Mpp::Methods::Tempo.tempo(
+  account: wallet,
+  intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new},
+  rpc_url: "https://tempo-rpc.internal",
+  rpc: tempo_rpc,
+  rlp: rlp_codec,
+)
+```
+
+To sponsor a transaction when the challenge does not request a fee payer, pass
+an object whose `cosign(raw_transaction)` method accepts a sender-signed `0x78`
+envelope and returns a completed `0x76` transaction:
+
+```ruby
+method = Mpp::Methods::Tempo.tempo(
+  account: payment_wallet,
+  transaction_fee_payer: transaction_sponsor,
+  intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new},
+)
+```
+
+Server-requested fee sponsorship uses an expiring nonce. You can also select
+one directly and configure its validity as a timestamp or a per-challenge callable:
+
+```ruby
+method = Mpp::Methods::Tempo.tempo(
+  account: wallet,
+  intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new},
+  nonce_strategy: :expiring,
+  valid_before: ->(challenge:) { Time.now.to_i + 60 },
+)
+```
+
+Without these options, Tempo continues to use sequential nonces, public RPC,
+and the gem-backed RLP codec. The default codec requires the `rlp` gem.
+`Account.from_key`, proof creation, and server-side signature recovery require
+the `eth` gem; transaction construction with an injected signer does not.
+
 ### Event hooks
 
 Register hooks to observe the automatic payment lifecycle. Each registration returns an unsubscribe proc.

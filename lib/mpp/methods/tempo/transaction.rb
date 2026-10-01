@@ -1,6 +1,9 @@
 # typed: false
 # frozen_string_literal: true
 
+require_relative "attribution"
+require_relative "rlp"
+
 module Mpp
   module Methods
     module Tempo
@@ -35,25 +38,20 @@ module Mpp
           :fee_token, :sender_signature, :fee_payer_signature, :sender_address,
           :tempo_authorization_list, :key_authorization
         ) do
-          def encoded_2718
-            require_rlp!
-
-            [TYPE_ID].pack("C") + RLP.encode(rlp_fields)
+          def encoded_2718(rlp: nil)
+            codec = Rlp.resolve(rlp)
+            [TYPE_ID].pack("C") + codec.encode(rlp_fields)
           end
 
-          def signature_hash
-            require_eth!
-            require_rlp!
-
-            Eth::Util.keccak256([TYPE_ID].pack("C") + RLP.encode(signing_rlp_fields))
+          def signature_hash(rlp: nil)
+            codec = Rlp.resolve(rlp)
+            Attribution.keccak256([TYPE_ID].pack("C") + codec.encode(signing_rlp_fields))
           end
 
           # Hash for fee payer to sign.
-          def fee_payer_signature_hash
-            require_eth!
-            require_rlp!
-
-            Eth::Util.keccak256([FeePayer::TYPE_ID].pack("C") + RLP.encode(fee_payer_signing_rlp_fields))
+          def fee_payer_signature_hash(rlp: nil)
+            codec = Rlp.resolve(rlp)
+            Attribution.keccak256([FeePayer::TYPE_ID].pack("C") + codec.encode(fee_payer_signing_rlp_fields))
           end
 
           private
@@ -152,25 +150,29 @@ module Mpp
 
             Integer(value)
           end
-
-          def require_eth!
-            Kernel.require "eth"
-          rescue LoadError
-            raise LoadError, "eth gem is required for Tempo transaction signing. Install with: gem install eth"
-          end
-
-          def require_rlp!
-            Kernel.require "rlp"
-          rescue LoadError
-            raise LoadError, "rlp gem is required for Tempo transaction encoding. Install with: gem install rlp"
-          end
         end
 
         module_function
 
+        def validate_signature!(signature)
+          unless signature.respond_to?(:b)
+            raise ArgumentError, "signature must be a 65-byte string"
+          end
+
+          bytes = signature.b
+          raise ArgumentError, "signature must be 65 bytes, got #{bytes.bytesize}" unless bytes.bytesize == 65
+
+          v = bytes.getbyte(64)
+          parity = (v >= 27) ? v - 27 : v
+          raise ArgumentError, "signature parity must be 0 or 1, got #{v}" unless [0, 1].include?(parity)
+
+          signature
+        end
+
         def build_signed_transfer(account:, chain_id:, gas_limit:, gas_price:, nonce:, nonce_key:,
           currency:, transfer_data:, max_priority_fee_per_gas: nil, max_fee_per_gas: nil,
-          valid_before: nil, awaiting_fee_payer: false)
+          valid_before: nil, awaiting_fee_payer: false, rlp: nil)
+          codec = Rlp.resolve(rlp)
           tx = SignedTransaction.new(
             chain_id: chain_id,
             max_priority_fee_per_gas: max_priority_fee_per_gas || gas_price,
@@ -190,9 +192,13 @@ module Mpp
             key_authorization: nil
           )
 
-          signature = account.sign_hash(tx.signature_hash)
+          signature = validate_signature!(account.sign_hash(tx.signature_hash(rlp: codec)))
           signed = tx.with(sender_signature: signature)
-          raw = awaiting_fee_payer ? FeePayer.encode(signed) : signed.encoded_2718
+          raw = if awaiting_fee_payer
+            FeePayer.encode(signed, rlp: codec)
+          else
+            signed.encoded_2718(rlp: codec)
+          end
 
           ["0x#{raw.unpack1("H*")}", chain_id]
         end
