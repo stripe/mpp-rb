@@ -9,6 +9,7 @@ module Mpp
       autoload :Keychain, "mpp/methods/tempo/keychain"
       autoload :Attribution, "mpp/methods/tempo/attribution"
       autoload :Rpc, "mpp/methods/tempo/rpc"
+      autoload :Rlp, "mpp/methods/tempo/rlp"
       autoload :Transaction, "mpp/methods/tempo/transaction"
       autoload :FeePayerPolicy, "mpp/methods/tempo/fee_payer_policy"
       autoload :FeePayerClient, "mpp/methods/tempo/fee_payer_client"
