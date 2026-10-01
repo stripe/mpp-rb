@@ -184,8 +184,8 @@ class TestTempoChainPinning < Minitest::Test
     Struct.new(:address, :type).new(RECIPIENT, "local")
   end
 
-  def make_method(chain_id:)
-    Mpp::Methods::Tempo::TempoMethod.new(account: stub_account, chain_id: chain_id)
+  def make_method(chain_id:, rpc_url: nil)
+    Mpp::Methods::Tempo::TempoMethod.new(account: stub_account, chain_id: chain_id, rpc_url: rpc_url)
   end
 
   def make_challenge(chain_id: nil)
@@ -251,17 +251,15 @@ class TestTempoChainPinning < Minitest::Test
     assert_equal "did:pkh:eip155:42431:#{RECIPIENT}", credential.source
   end
 
-  def test_unpinned_accepts_any_chain_id
+  def test_unpinned_rejects_unknown_challenge_chain_before_rpc
     method = make_method(chain_id: nil)
     challenge = make_challenge(chain_id: 1)
 
-    # chain 1 is unknown to CHAIN_RPC_URLS and no pin is set, so no expected
-    # chain is enforced downstream; the transfer's reported chain drives the DID.
-    credential = with_stubbed_transfer(method, source_chain_id: 1, expected_chain_id: 1) do
+    error = assert_raises(ArgumentError) do
       method.create_credential(challenge)
     end
 
-    assert_equal "did:pkh:eip155:1:#{RECIPIENT}", credential.source
+    assert_includes error.message, "Pass rpc_url explicitly"
   end
 
   def test_omitted_challenge_chain_id_uses_pin
@@ -278,7 +276,7 @@ class TestTempoChainPinning < Minitest::Test
   def test_custom_chain_string_pin_normalizes_downstream
     # Custom chain (not in CHAIN_RPC_URLS) with a String pin: the normalized
     # integer must reach the downstream check so a matching chain is not rejected.
-    method = make_method(chain_id: "99999")
+    method = make_method(chain_id: "99999", rpc_url: "https://custom-chain.internal")
     challenge = make_challenge(chain_id: 99_999)
 
     credential = with_stubbed_transfer(method, source_chain_id: 99_999, expected_chain_id: 99_999) do
@@ -381,6 +379,7 @@ class TestTempoClientExtensions < Minitest::Test
     method = Mpp::Methods::Tempo.tempo(
       account: FakeSigner.new(ACCOUNT, 0x11),
       intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new},
+      chain_id: nil,
       rpc: rpc,
       rlp: CustomRlp.new
     )
@@ -399,6 +398,20 @@ class TestTempoClientExtensions < Minitest::Test
         rpc: FakeRpc.new,
         rlp: CustomRlp.new
       )
+    end
+
+    assert_includes error.message, "Pass rpc_url explicitly"
+  end
+
+  def test_direct_method_requires_rpc_url_before_using_unknown_configured_chain
+    method = Mpp::Methods::Tempo::TempoMethod.new(
+      account: FakeSigner.new(ACCOUNT, 0x11),
+      chain_id: 99_999,
+      rpc: FakeRpc.new,
+      rlp: CustomRlp.new
+    )
+    error = assert_raises(ArgumentError) do
+      method.rpc_url
     end
 
     assert_includes error.message, "Pass rpc_url explicitly"
@@ -482,6 +495,7 @@ class TestTempoClientExtensions < Minitest::Test
     method = Mpp::Methods::Tempo.tempo(
       account: FakeSigner.new(ACCOUNT, 0x11),
       intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new},
+      chain_id: nil,
       rpc: FakeRpc.new,
       rlp: CustomRlp.new,
       transaction_fee_payer: sponsor

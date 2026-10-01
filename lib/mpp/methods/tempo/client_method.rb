@@ -55,13 +55,13 @@ module Mpp
           @fee_payer_allowed_fee_tokens =
             fee_payer_allowed_fee_tokens&.map { |token| token.to_s.downcase }
           @root_account = root_account
+          @chain_id = chain_id
           @rpc_url = rpc_url
           @rpc = Rpc.resolve(rpc)
           @rlp = Rlp.resolve(rlp)
           @transaction_fee_payer = transaction_fee_payer
           @nonce_strategy = nonce_strategy
           @valid_before = valid_before
-          @chain_id = chain_id
           # Ordered currencies offered by a server; the first is the primary.
           @currencies = (currencies || [currency].compact).dup.freeze
           @currency = currency || @currencies.first
@@ -88,9 +88,7 @@ module Mpp
           resolved_chain_id = chain_id || @chain_id
           return Defaults::RPC_URL unless resolved_chain_id
 
-          Defaults::CHAIN_RPC_URLS[Integer(resolved_chain_id)] || Defaults::RPC_URL
-        rescue ArgumentError, TypeError
-          Defaults::RPC_URL
+          Defaults.rpc_url_for_chain(Integer(resolved_chain_id))
         end
 
         # Create a credential to satisfy the given challenge.
@@ -130,7 +128,6 @@ module Mpp
           end
 
           expected_chain_id ||= configured_chain_id
-          resolved_rpc_url = rpc_url(chain_id: expected_chain_id)
 
           # Proof mode: sign EIP-712 typed data (no transaction needed)
           if mode == :proof
@@ -150,6 +147,8 @@ module Mpp
               source: Proof.source(address: @account.address, chain_id: chain_id)
             )
           end
+
+          resolved_rpc_url = rpc_url(chain_id: expected_chain_id)
 
           server_fee_payer = method_details.fetch("feePayer", false) == true
           client_fee_payer = @transaction_fee_payer unless server_fee_payer
