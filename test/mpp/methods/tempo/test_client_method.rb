@@ -515,11 +515,6 @@ class TestTempoClientExtensions < Minitest::Test
     assert_empty sponsor.envelopes
   end
 
-  def test_server_sponsorship_preserves_truthy_fee_payer_compatibility
-    assert_equal 0x78,
-      raw_bytes(build_method.create_credential(challenge(fee_payer: "true")).payload["signature"]).getbyte(0)
-  end
-
   def test_transaction_fee_payer_does_not_affect_proof_mode
     sponsor = FakeTransactionFeePayer.new
     method = build_method(transaction_fee_payer: sponsor)

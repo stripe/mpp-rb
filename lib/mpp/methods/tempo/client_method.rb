@@ -151,7 +151,7 @@ module Mpp
             )
           end
 
-          server_fee_payer = !!method_details.fetch("feePayer", false)
+          server_fee_payer = method_details.fetch("feePayer", false) == true
           client_fee_payer = @transaction_fee_payer unless server_fee_payer
           awaiting_fee_payer = server_fee_payer || client_fee_payer
 
