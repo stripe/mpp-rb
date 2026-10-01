@@ -3,6 +3,7 @@
 
 require "time"
 require "json"
+require_relative "transfers"
 
 module Mpp
   module Methods
@@ -16,6 +17,7 @@ module Mpp
       TRANSFER_WITH_MEMO_TOPIC = "0x57bc7354aa85aed339e000bccffabbc529466af35f0772c8f8ee1145927de7f0"
       TRANSACTION_PENDING = "transaction:pending"
       TRANSACTION_VERIFIED = "transaction:verified"
+      CHALLENGE_MEMO_ERROR = "Payment verification failed: no matching payment call found with a memo bound to this challenge"
 
       # Tempo charge intent for server-side verification.
       class ChargeIntent
@@ -314,7 +316,8 @@ module Mpp
         end
 
         def match_transfer_logs(receipt, request, expected_sender: nil, source: nil, validate_sender: nil)
-          matched_logs = []
+          transfer_logs = []
+          expected = expected_transfers(request)
 
           (receipt["logs"] || []).each do |log|
             next unless log["address"]&.downcase == request.currency.downcase
@@ -325,8 +328,6 @@ module Mpp
             from_address = "0x#{topics[1][-40..]}"
             to_address = "0x#{topics[2][-40..]}"
 
-            next unless to_address.downcase == request.recipient.downcase
-
             matched =
               case topics[0]
               when TRANSFER_WITH_MEMO_TOPIC
@@ -336,20 +337,19 @@ module Mpp
                 next if data.length < 66
 
                 amount = data[2, 64].to_i(16)
-                next unless amount == Integer(request.amount)
-
-                {kind: :memo, memo: topics[3]}
+                {amount: amount, kind: :memo, memo: topics[3], recipient: to_address}
               when TRANSFER_TOPIC
                 data = log.fetch("data", "0x")
                 next if data.length < 66
 
                 amount = data.delete_prefix("0x").to_i(16)
-                next unless amount == Integer(request.amount)
-
-                {kind: :transfer}
+                {amount: amount, kind: :transfer, memo: nil, recipient: to_address}
               end
 
             next unless matched
+            next unless expected.any? do |transfer|
+              transfer.recipient.downcase == matched[:recipient].downcase && transfer.amount == matched[:amount]
+            end
 
             # On a sender mismatch, validate_sender may authorize the log.
             if expected_sender && from_address.downcase != expected_sender.downcase
@@ -360,22 +360,28 @@ module Mpp
               )
             end
 
-            matched_logs << matched
+            transfer_logs << matched
           end
 
-          matched_logs.sort_by { |log| (log[:kind] == :memo) ? 0 : 1 }
+          match_expected_transfers(transfer_logs, request) || []
         end
 
         def assert_challenge_bound_memo(matched_logs, challenge)
-          bound = matched_logs.any? do |log|
-            log[:kind] == :memo &&
-              Attribution.verify_server(log[:memo], challenge.realm) &&
-              Attribution.verify_challenge_binding(log[:memo], challenge.id)
+          bound = false
+          matched_logs.each do |log|
+            memo = log[:memo]
+            next unless memo && Attribution.mpp_memo?(memo)
+
+            unless Attribution.verify_server(memo, challenge.realm) &&
+                Attribution.verify_challenge_binding(memo, challenge.id)
+              raise Mpp::VerificationError, CHALLENGE_MEMO_ERROR
+            end
+            bound = true
           end
 
           return if bound
 
-          raise Mpp::VerificationError, "Payment verification failed: memo is not bound to this challenge"
+          raise Mpp::VerificationError, CHALLENGE_MEMO_ERROR
         end
 
         def validate_transaction(payload, request, credential:)
@@ -425,22 +431,17 @@ module Mpp
 
           calls_data = decoded[4] || []
           raise Mpp::VerificationError, "Transaction contains no calls" if calls_data.empty?
-
-          found = calls_data.any? do |call_item|
+          calls = calls_data.filter_map do |call_item|
             next unless call_item.is_a?(Array) && call_item.length >= 3
 
-            call_to_bytes = call_item[0]
-            call_data_bytes = call_item[2]
-            next unless call_to_bytes && call_data_bytes
-
-            to_hex = call_to_bytes.is_a?(String) ? call_to_bytes.unpack1("H*") : call_to_bytes.to_s
-            next unless "0x#{to_hex}".downcase == request.currency.downcase
-
-            data_hex = call_data_bytes.is_a?(String) ? call_data_bytes.unpack1("H*") : call_data_bytes.to_s
-            match_transfer_calldata(data_hex, request, challenge: challenge)
+            Transaction::Call.new(
+              to: "0x#{call_item[0].unpack1("H*")}",
+              value: int_value(call_item[1]),
+              data: "0x#{call_item[2].unpack1("H*")}"
+            )
           end
-
-          raise Mpp::VerificationError, "Invalid transaction: no matching payment call found" unless found
+          matched = match_transfer_calls(calls, request, exact_count: tx_bytes.getbyte(0) == FeePayer::TYPE_ID)
+          assert_challenge_bound_memo(matched, challenge)
         end
 
         def raw_transaction_hash(raw_tx)
@@ -472,27 +473,66 @@ module Mpp
           [canonical_key, canonical]
         end
 
-        def match_transfer_calldata(call_data_hex, request, challenge: nil)
-          return false if call_data_hex.length < 136
+        def expected_transfers(request)
+          Transfers.resolve(
+            amount: request.amount,
+            recipient: request.recipient,
+            splits: request.method_details.splits
+          )
+        rescue ArgumentError => e
+          raise Mpp::VerificationError, e.message
+        end
 
-          selector = call_data_hex[0, 8].downcase
+        def match_expected_transfers(actual, request)
+          expected = expected_transfers(request).sort_by { |transfer| transfer.memo ? 0 : 1 }
+          used = Set.new
+          expected.each_with_object([]) do |transfer, matched|
+            candidate_indexes = actual.each_index.sort_by { |index| actual[index][:memo] ? 0 : 1 }
+            index = candidate_indexes.find do |candidate_index|
+              next false if used.include?(candidate_index)
 
-          return false unless selector == TRANSFER_WITH_MEMO_SELECTOR
+              candidate = actual[candidate_index]
+              candidate[:recipient].downcase == transfer.recipient.downcase &&
+                candidate[:amount] == transfer.amount &&
+                (!transfer.memo || candidate[:memo]&.downcase == transfer.memo.downcase)
+            end
+            return nil unless index
 
-          decoded_to = "0x#{call_data_hex[32, 40]}"
-          decoded_amount = call_data_hex[72, 64].to_i(16)
+            used << index
+            matched << actual[index]
+          end
+        end
 
-          return false unless decoded_to.downcase == request.recipient.downcase
-          return false unless decoded_amount == Integer(request.amount)
-          return false if call_data_hex.length < 200
+        def match_transfer_calls(calls, request, exact_count: false)
+          expected_count = expected_transfers(request).length
+          if exact_count && calls.length != expected_count
+            raise Mpp::VerificationError, "Invalid transaction: contains unauthorized extra calls"
+          end
 
-          return false unless challenge
+          actual = calls.filter_map { |call| decode_transfer_call(call, request.currency) }
+          matched = match_expected_transfers(actual, request)
+          unless matched
+            raise Mpp::VerificationError, "Invalid transaction: no matching payment call found"
+          end
 
-          decoded_memo = "0x#{call_data_hex[136, 64]}"
-          return false unless Attribution.verify_server(decoded_memo, challenge.realm)
-          return false unless Attribution.verify_challenge_binding(decoded_memo, challenge.id)
+          matched
+        end
 
-          true
+        def decode_transfer_call(call, currency)
+          return unless !call.value || Integer(call.value).zero?
+          return unless call.to.downcase == currency.downcase
+
+          data = call.data.delete_prefix("0x")
+          selector = data[0, 8]&.downcase
+          expected_length = (selector == TRANSFER_WITH_MEMO_SELECTOR) ? 200 : 136
+          return unless [TRANSFER_SELECTOR, TRANSFER_WITH_MEMO_SELECTOR].include?(selector)
+          return unless data.length == expected_length
+
+          {
+            amount: data[72, 64].to_i(16),
+            memo: ("0x#{data[136, 64]}" if selector == TRANSFER_WITH_MEMO_SELECTOR),
+            recipient: "0x#{data[32, 40]}"
+          }
         end
 
         def validate_proof(payload, request, credential:)
@@ -787,27 +827,17 @@ module Mpp
         MAX_TRANSFER_CALLDATA_HEX_LENGTH = 200
 
         def validate_fee_payer_calls(calls, request, challenge: nil)
-          if calls.length != 1
-            raise Mpp::VerificationError, "Invalid transaction: contains unauthorized extra calls"
-          end
+          calls.each do |call|
+            call_data_hex = call.data.delete_prefix("0x")
+            next unless call_data_hex.start_with?(TRANSFER_WITH_MEMO_SELECTOR)
+            next unless call_data_hex.length > MAX_TRANSFER_CALLDATA_HEX_LENGTH
 
-          call = calls.first
-          if call.value && Integer(call.value) != 0
-            raise Mpp::VerificationError, "Invalid transaction: no matching payment call found"
-          end
-          unless call.to.downcase == request.currency.downcase
-            raise Mpp::VerificationError, "Invalid transaction: no matching payment call found"
-          end
-
-          call_data_hex = call.data.delete_prefix("0x")
-          if call_data_hex.length > MAX_TRANSFER_CALLDATA_HEX_LENGTH
             raise Mpp::VerificationError,
               "Invalid transaction: calldata contains trailing padding (#{call_data_hex.length / 2} bytes, expected #{MAX_TRANSFER_CALLDATA_HEX_LENGTH / 2})"
           end
 
-          unless match_transfer_calldata(call_data_hex, request, challenge: challenge)
-            raise Mpp::VerificationError, "Invalid transaction: no matching payment call found"
-          end
+          matched = match_transfer_calls(calls, request, exact_count: true)
+          assert_challenge_bound_memo(matched, challenge)
         end
 
         def int_value(value)

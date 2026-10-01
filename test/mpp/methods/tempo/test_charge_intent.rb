@@ -11,6 +11,8 @@ class TestTempoChargeIntent < Minitest::Test
   CHAIN_ID = Mpp::Methods::Tempo::Defaults::CHAIN_ID
   SOURCE_ADDR = "0x00000000000000000000000000000000000000aa"
   RELAYER = "0x00000000000000000000000000000000000000bb"
+  SPLIT_RECIPIENT = "0x#{"02" * 20}"
+  SECOND_SPLIT_RECIPIENT = "0x#{"03" * 20}"
 
   def setup
     @intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test")
@@ -34,7 +36,7 @@ class TestTempoChargeIntent < Minitest::Test
       verify_hash(receipt([transfer_log]), challenge_id: "challenge-123")
     end
 
-    assert_match(/memo is not bound to this challenge/, error.message)
+    assert_match(/no matching payment call found/, error.message)
   end
 
   def test_hash_without_explicit_memo_rejects_wrong_challenge_nonce
@@ -47,7 +49,7 @@ class TestTempoChargeIntent < Minitest::Test
       verify_hash(receipt([transfer_log(memo: memo), transfer_log]), challenge_id: "challenge-xyz")
     end
 
-    assert_match(/memo is not bound to this challenge/, error.message)
+    assert_match(/no matching payment call found/, error.message)
   end
 
   def test_hash_without_explicit_memo_rejects_wrong_realm
@@ -60,7 +62,60 @@ class TestTempoChargeIntent < Minitest::Test
       verify_hash(receipt([transfer_log(memo: memo), transfer_log]), challenge_id: "challenge-123")
     end
 
-    assert_match(/memo is not bound to this challenge/, error.message)
+    assert_match(/no matching payment call found/, error.message)
+  end
+
+  def test_hash_accepts_split_transfers_in_any_order
+    split_recipient = SPLIT_RECIPIENT
+    second_recipient = SECOND_SPLIT_RECIPIENT
+    split_memo = "0x#{"22" * 32}"
+    attribution = Mpp::Methods::Tempo::Attribution.encode(
+      server_id: REALM,
+      challenge_id: "challenge-123"
+    )
+    request = request_hash.merge(
+      "methodDetails" => {
+        "splits" => [
+          {"amount" => "200", "recipient" => split_recipient},
+          {"amount" => "100", "recipient" => second_recipient, "memo" => split_memo}
+        ]
+      }
+    )
+    logs = [
+      # Tempo emits a plain Transfer alongside TransferWithMemo. Prefer the
+      # memo-bearing event when matching the primary transfer.
+      transfer_log(amount: 700, recipient: RECIPIENT),
+      transfer_log(amount: 100, recipient: second_recipient, memo: split_memo),
+      transfer_log(amount: 700, recipient: RECIPIENT, memo: attribution),
+      transfer_log(amount: 200, recipient: split_recipient)
+    ]
+
+    result = verify_hash(receipt(logs), challenge_id: "challenge-123", request: request)
+
+    assert_equal HASH, result.reference
+  end
+
+  def test_hash_rejects_missing_split_transfer
+    split_recipient = SPLIT_RECIPIENT
+    attribution = Mpp::Methods::Tempo::Attribution.encode(
+      server_id: REALM,
+      challenge_id: "challenge-123"
+    )
+    request = request_hash.merge(
+      "methodDetails" => {
+        "splits" => [{"amount" => "200", "recipient" => split_recipient}]
+      }
+    )
+
+    error = assert_raises(Mpp::VerificationError) do
+      verify_hash(
+        receipt([transfer_log(amount: 800, recipient: RECIPIENT, memo: attribution)]),
+        challenge_id: "challenge-123",
+        request: request
+      )
+    end
+
+    assert_match(/matching request parameters/, error.message)
   end
 
   def test_initialize_rejects_nil_store
@@ -136,6 +191,32 @@ class TestTempoChargeIntent < Minitest::Test
       end
       assert_match(/Transaction hash already used/, error.message)
     end
+  end
+
+  def test_server_challenge_normalizes_split_amounts
+    server = Mpp.create(
+      method: Mpp::Methods::Tempo.tempo(
+        chain_id: Mpp::Methods::Tempo::Defaults::TESTNET_CHAIN_ID,
+        currency: Mpp::Methods::Tempo::Defaults::PATH_USD,
+        recipient: RECIPIENT,
+        intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new}
+      ),
+      realm: REALM,
+      secret_key: "test-secret"
+    )
+    split_recipient = SPLIT_RECIPIENT
+
+    challenge = server.charge(
+      nil,
+      "1.00",
+      splits: [{amount: "0.20", recipient: split_recipient, memo: "0x#{"11" * 32}"}]
+    )
+
+    assert_equal [{
+      "amount" => "200000",
+      "recipient" => split_recipient,
+      "memo" => "0x#{"11" * 32}"
+    }], challenge.request.dig("methodDetails", "splits")
   end
 
   def test_transaction_credential_replay_rejected_after_success
@@ -949,7 +1030,7 @@ class TestTempoChargeIntent < Minitest::Test
     )
   end
 
-  def verify_hash(receipt, challenge_id:)
+  def verify_hash(receipt, challenge_id:, request: request_hash)
     credential = Mpp::Credential.new(
       challenge: Mpp::ChallengeEcho.new(
         id: challenge_id,
@@ -966,7 +1047,7 @@ class TestTempoChargeIntent < Minitest::Test
       assert_equal [HASH], params
       receipt
     }) do
-      @intent.verify(credential, request_hash)
+      @intent.verify(credential, request)
     end
   end
 
@@ -982,18 +1063,18 @@ class TestTempoChargeIntent < Minitest::Test
     {"status" => "0x1", "from" => SENDER, "logs" => logs}
   end
 
-  def transfer_log(memo: nil, from: SENDER)
+  def transfer_log(memo: nil, from: SENDER, recipient: RECIPIENT, amount: 1000)
     topics = [
       memo ? Mpp::Methods::Tempo::TRANSFER_WITH_MEMO_TOPIC : Mpp::Methods::Tempo::TRANSFER_TOPIC,
       topic_address(from),
-      topic_address(RECIPIENT)
+      topic_address(recipient)
     ]
     topics << memo if memo
 
     {
       "address" => CURRENCY,
       "topics" => topics,
-      "data" => "0x#{1000.to_s(16).rjust(64, "0")}"
+      "data" => "0x#{amount.to_s(16).rjust(64, "0")}"
     }
   end
 

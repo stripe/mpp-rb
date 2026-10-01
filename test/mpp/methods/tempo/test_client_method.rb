@@ -291,6 +291,7 @@ class TestTempoClientExtensions < Minitest::Test
   CURRENCY = Mpp::Methods::Tempo::Defaults::PATH_USD
   RECIPIENT = "0x0000000000000000000000000000000000000001"
   ACCOUNT = "0x1234567890abcdef1234567890abcdef12345678"
+  SPLIT_RECIPIENT = "0x#{"02" * 20}"
 
   class FakeSigner
     attr_reader :address, :hashes
@@ -438,6 +439,57 @@ class TestTempoClientExtensions < Minitest::Test
     assert_equal 0, int_value(decoded[6])
     assert_equal 7, int_value(decoded[7])
     assert_equal "", decoded[8]
+  end
+
+  def test_split_transaction_builds_primary_remainder_and_split_calls
+    split_recipient = SPLIT_RECIPIENT
+    split_memo = "0x#{"22" * 32}"
+    method = build_method
+    split_challenge = challenge(
+      splits: [
+        {"amount" => "200000", "recipient" => split_recipient},
+        {"amount" => "100000", "recipient" => RECIPIENT, "memo" => split_memo}
+      ]
+    )
+    credential = method.create_credential(split_challenge)
+    raw_tx = credential.payload["signature"]
+    decoded = decode(raw_tx, 0x76)
+    calls = decoded[4]
+
+    assert_equal 3, calls.length
+    assert_equal [700_000, 200_000, 100_000], calls.map { |call| call[2].unpack1("H*")[72, 64].to_i(16) }
+    assert_equal ["95777d59", "a9059cbb", "95777d59"], calls.map { |call| call[2].unpack1("H*")[0, 8] }
+    assert_equal split_recipient.delete_prefix("0x"), calls[1][2].unpack1("H*")[32, 40]
+    assert_equal split_memo.delete_prefix("0x"), calls[2][2].unpack1("H*")[136, 64]
+
+    estimate = method.rpc.calls.find { |call| call[1] == "eth_estimateGas" }
+    assert_equal 3, estimate[2][0]["calls"].length
+    assert Mpp::Methods::Tempo::ChargeIntent.new.validate(credential, split_challenge.request)
+  end
+
+  def test_split_transaction_preflight_rejects_missing_call
+    split_challenge = challenge(
+      splits: [{
+        "amount" => "200000",
+        "recipient" => SPLIT_RECIPIENT
+      }]
+    )
+    credential = build_method.create_credential(split_challenge)
+    bytes = raw_bytes(credential.payload["signature"])
+    fields = RLP.decode(bytes[1..])
+    fields[4].pop
+    tampered = "0x76#{RLP.encode(fields).unpack1("H*")}"
+    tampered_credential = Mpp::Credential.new(
+      challenge: credential.challenge,
+      payload: {"type" => "transaction", "signature" => tampered},
+      source: credential.source
+    )
+
+    error = assert_raises(Mpp::VerificationError) do
+      Mpp::Methods::Tempo::ChargeIntent.new.validate(tampered_credential, split_challenge.request)
+    end
+
+    assert_includes error.message, "no matching payment call found"
   end
 
   def test_expiring_strategy_uses_max_nonce_key_and_custom_validity
@@ -588,9 +640,10 @@ class TestTempoClientExtensions < Minitest::Test
     )
   end
 
-  def challenge(fee_payer: nil, nonce_key: nil)
+  def challenge(fee_payer: nil, nonce_key: nil, splits: nil)
     details = {"chainId" => 42_431}
     details["feePayer"] = fee_payer unless fee_payer.nil?
+    details["splits"] = splits unless splits.nil?
     request = {
       "amount" => "1000000",
       "currency" => CURRENCY,
