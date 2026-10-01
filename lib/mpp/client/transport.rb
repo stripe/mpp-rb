@@ -20,7 +20,13 @@ module Mpp
 
       sig { params(methods: T::Array[T.untyped], events: T.nilable(Mpp::Events::Dispatcher)).void }
       def initialize(methods:, events: nil)
-        @methods = T.let(methods.to_h { |m| [m.name, m] }, T::Hash[String, T.untyped])
+        @methods = T.let({}, T::Hash[String, T.untyped])
+        methods.each do |method|
+          intents = method.respond_to?(:intents) ? method.intents.keys : []
+          intents = ["charge"] if intents.empty?
+          intents.each { |intent| @methods["#{method.name}/#{intent}"] = method }
+        end
+        @accept_payment = T.let(@methods.keys.join(", "), String)
         @events = T.let(events || Mpp::Events.client_dispatcher, Mpp::Events::Dispatcher)
       end
 
@@ -54,13 +60,21 @@ module Mpp
       sig { params(method: T.untyped, url: T.any(URI::Generic, String), headers: T.untyped, body: T.untyped).returns(T.untyped) }
       def request(method, url, headers: {}, body: nil)
         uri = URI(url)
+        headers = headers.dup
+        preference_header = headers.keys.find { |key| key.casecmp?("Accept-Payment") }
+        if preference_header
+          preferences = Mpp::Server::AcceptPayment.parse(headers.fetch(preference_header))
+        else
+          preferences = @accept_payment.empty? ? [] : Mpp::Server::AcceptPayment.parse(@accept_payment)
+          headers["Accept-Payment"] = @accept_payment unless @accept_payment.empty?
+        end
         response = send_request(uri, method, headers, body)
 
         return response unless response.code.to_i == 402
 
         # Parse WWW-Authenticate headers
         www_auth_headers = response.get_fields("www-authenticate") || []
-        challenge, matched_method = find_matching_challenge(www_auth_headers, input: url, response: response)
+        challenge, matched_method = find_matching_challenge(www_auth_headers, preferences: preferences, input: url, response: response)
         return response unless challenge && matched_method
 
         # Check expiry before paying (client-side guardrail)
@@ -202,12 +216,13 @@ module Mpp
         http.request(req)
       end
 
-      sig { params(www_auth_headers: T.untyped, input: T.untyped, response: T.untyped).returns(T::Array[T.untyped]) }
-      def find_matching_challenge(www_auth_headers, input: nil, response: nil)
+      sig { params(www_auth_headers: T.untyped, preferences: T::Array[Mpp::Server::AcceptPayment::Entry], input: T.untyped, response: T.untyped).returns(T::Array[T.untyped]) }
+      def find_matching_challenge(www_auth_headers, preferences:, input: nil, response: nil)
+        challenges = []
         www_auth_headers.each do |header|
           Mpp::Challenge.www_authenticate_chunks(header).each do |chunk|
             parsed = Mpp::Challenge.from_www_authenticate(chunk)
-            return [parsed, @methods[parsed.method]] if @methods.key?(parsed.method)
+            challenges << parsed
           rescue Mpp::ParseError => e
             # Skip a malformed challenge but keep scanning the rest: a bad chunk
             # earlier in a merged value must not hide a supported challenge that
@@ -221,6 +236,10 @@ module Mpp
             end
             next
           end
+        end
+        Mpp::Server::AcceptPayment.rank(challenges, preferences).each do |challenge|
+          method = @methods["#{challenge.method}/#{challenge.intent}"]
+          return [challenge, method] if method
         end
         [nil, nil]
       end
