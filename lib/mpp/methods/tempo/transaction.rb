@@ -170,15 +170,16 @@ module Mpp
         end
 
         def build_signed_transfer(account:, chain_id:, gas_limit:, gas_price:, nonce:, nonce_key:,
-          currency:, transfer_data:, max_priority_fee_per_gas: nil, max_fee_per_gas: nil,
+          currency:, transfer_data: nil, calls: nil, max_priority_fee_per_gas: nil, max_fee_per_gas: nil,
           valid_before: nil, awaiting_fee_payer: false, rlp: nil)
           codec = Rlp.resolve(rlp)
+          calls ||= [Call.new(to: currency, value: 0, data: transfer_data)]
           tx = SignedTransaction.new(
             chain_id: chain_id,
             max_priority_fee_per_gas: max_priority_fee_per_gas || gas_price,
             max_fee_per_gas: max_fee_per_gas || gas_price,
             gas_limit: gas_limit,
-            calls: [Call.new(to: currency, value: 0, data: transfer_data)],
+            calls: calls,
             access_list: EMPTY_LIST,
             nonce_key: nonce_key,
             nonce: nonce,

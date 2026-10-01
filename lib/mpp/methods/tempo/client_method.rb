@@ -6,6 +6,7 @@ require_relative "fee_payer_policy"
 require_relative "rlp"
 require_relative "rpc"
 require_relative "transaction"
+require_relative "transfers"
 
 module Mpp
   module Methods
@@ -78,6 +79,10 @@ module Mpp
           return true unless @can_offer
 
           @can_offer.call(request)
+        end
+
+        def supports_splits?
+          true
         end
 
         # Resolve an endpoint for the configured chain, or a challenge-provided override.
@@ -166,6 +171,7 @@ module Mpp
             amount: request["amount"],
             currency: request["currency"],
             recipient: request["recipient"],
+            splits: method_details["splits"],
             nonce_key: nonce_key,
             memo: memo,
             rpc_url: resolved_rpc_url,
@@ -193,6 +199,14 @@ module Mpp
 
         # Transform request - adds default methodDetails if needed.
         def transform_request(request, _credential)
+          method_details = request["methodDetails"]
+          if method_details.is_a?(Hash) && method_details.key?("splits")
+            Transfers.resolve(
+              amount: request["amount"],
+              recipient: request["recipient"],
+              splits: method_details["splits"]
+            )
+          end
           request
         end
 
@@ -250,17 +264,21 @@ module Mpp
         end
 
         def build_tempo_transfer(amount:, currency:, recipient:, nonce_key: 0,
-          memo: nil, rpc_url: nil, expected_chain_id: nil,
+          splits: nil, memo: nil, rpc_url: nil, expected_chain_id: nil,
           awaiting_fee_payer: false, nonce_strategy: nil, challenge: nil)
           raise ArgumentError, "No account configured" unless @account
           validate_signer!(@account, "account")
 
           resolved_rpc = rpc_url || self.rpc_url
 
-          transfer_data = if memo
-            encode_transfer_with_memo(recipient, Integer(amount), memo)
-          else
-            encode_transfer(recipient, Integer(amount))
+          transfers = Transfers.resolve(amount: amount, recipient: recipient, splits: splits, memo: memo)
+          calls = transfers.map do |transfer|
+            data = if transfer.memo
+              encode_transfer_with_memo(transfer.recipient, transfer.amount, transfer.memo)
+            else
+              encode_transfer(transfer.recipient, transfer.amount)
+            end
+            Transaction::Call.new(to: currency, value: 0, data: data)
           end
 
           chain_id, on_chain_nonce, gas_price = Rpc.get_tx_params(
@@ -290,11 +308,12 @@ module Mpp
 
           gas_limit = DEFAULT_GAS_LIMIT
           begin
+            estimate_input = (calls.length == 1) ? calls.first.data : calls
             estimated = Rpc.estimate_gas(
               resolved_rpc,
               @account.address,
               currency,
-              transfer_data,
+              estimate_input,
               provider: @rpc
             )
             gas_limit = [gas_limit, estimated + 5_000].max
@@ -312,7 +331,7 @@ module Mpp
             nonce: resolved_nonce,
             nonce_key: resolved_nonce_key,
             currency: currency,
-            transfer_data: transfer_data,
+            calls: calls,
             valid_before: resolved_valid_before,
             awaiting_fee_payer: awaiting_fee_payer,
             rlp: @rlp

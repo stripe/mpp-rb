@@ -242,6 +242,20 @@ fee_payer: Mpp::Methods::Tempo::Account.from_key(ENV.fetch("FEE_PAYER_KEY"))
 relay: {url: "https://api.tempo.xyz", headers: -> { {"tempo-api-key" => ENV.fetch("TEMPO_API_KEY")} }}
 ```
 
+Tempo charges can split an amount across up to ten recipients. The primary
+recipient receives the remainder after the split amounts:
+
+```ruby
+server.charge(
+  authorization,
+  "1.00",
+  splits: [
+    {amount: "0.20", recipient: partner_address},
+    {amount: "0.10", recipient: platform_address, memo: "0x..."},
+  ],
+)
+```
+
 ### Client
 
 ```ruby

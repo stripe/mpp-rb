@@ -223,6 +223,10 @@ module Mpp
           method.respond_to?(:fee_payer) && method.fee_payer
         end
         chain_id = kwargs[:chain_id]
+        splits = kwargs[:splits]
+        if splits && !(method.respond_to?(:supports_splits?) && method.supports_splits?)
+          raise ArgumentError, "Method #{method.name} does not support payment splits"
+        end
         extra = kwargs[:extra]
         mppx_scope = kwargs[:mppx_scope]
 
@@ -257,10 +261,23 @@ module Mpp
         resolved_chain_id = chain_id
         resolved_chain_id ||= method.chain_id if method.respond_to?(:chain_id)
 
-        if fee_payer || !resolved_chain_id.nil?
+        if fee_payer || !resolved_chain_id.nil? || splits
           method_details = {}
           method_details["chainId"] = resolved_chain_id unless resolved_chain_id.nil?
           method_details["feePayer"] = true if fee_payer
+          if splits
+            method_details["splits"] = splits.map do |split|
+              split_amount = split[:amount] || split["amount"]
+              recipient = split[:recipient] || split["recipient"]
+              memo = split[:memo] || split["memo"]
+              normalized = {
+                "amount" => Mpp::Units.parse_units(split_amount.to_s, decimals).to_s,
+                "recipient" => recipient
+              }
+              normalized["memo"] = memo if memo
+              normalized
+            end
+          end
           request["methodDetails"] = method_details
         end
 

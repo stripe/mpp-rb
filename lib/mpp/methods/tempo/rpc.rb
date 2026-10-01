@@ -55,11 +55,21 @@ module Mpp
 
         # Estimate gas for a call.
         def estimate_gas(rpc_url, from_addr, to, data, client: nil, provider: self)
+          transaction = if data.is_a?(Array)
+            {
+              "from" => from_addr,
+              "calls" => data.map do |call|
+                {"to" => call.to, "value" => "0x#{Integer(call.value).to_s(16)}", "input" => call.data}
+              end
+            }
+          else
+            {"from" => from_addr, "to" => to, "data" => data}
+          end
           result = provider_call(
             provider,
             rpc_url,
             "eth_estimateGas",
-            [{"from" => from_addr, "to" => to, "data" => data}, "latest"],
+            [transaction, "latest"],
             client: client
           )
           result.to_i(16)

@@ -68,6 +68,25 @@ class TempoLiveIntegrationTest < Minitest::Test
     server&.close
   end
 
+  def test_client_transport_completes_split_402_roundtrip
+    payer = funded_account
+    recipient = funded_account
+    split_recipient = funded_account
+    server = PaidServer.new(
+      recipient: recipient.address,
+      chain_id: chain_id,
+      splits: [{amount: "0.25", recipient: split_recipient.address}]
+    )
+
+    response = Mpp::Client.get(server.url, methods: [client_method(account: payer)])
+
+    assert_equal "200", response.code, response.body
+    refute_nil response["Payment-Receipt"]
+    assert_equal "paid", JSON.parse(response.body).fetch("status")
+  ensure
+    server&.close
+  end
+
   def test_hash_credential_verifies_live_transfer
     payer = funded_account
     recipient = funded_account
@@ -249,7 +268,7 @@ class TempoLiveIntegrationTest < Minitest::Test
   class PaidServer
     attr_reader :url
 
-    def initialize(recipient:, chain_id:, fee_payer: nil)
+    def initialize(recipient:, chain_id:, fee_payer: nil, splits: nil)
       method = Mpp::Methods::Tempo.tempo(
         chain_id: chain_id,
         rpc_url: RPC_URL,
@@ -259,6 +278,7 @@ class TempoLiveIntegrationTest < Minitest::Test
         intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: RPC_URL)}
       )
       @sponsored = !fee_payer.nil?
+      @splits = splits
       @handler = Mpp.create(method: method, realm: REALM, secret_key: SECRET_KEY)
       @server = TCPServer.new("127.0.0.1", 0)
       @url = "http://127.0.0.1:#{@server.addr[1]}/paid"
@@ -298,7 +318,8 @@ class TempoLiveIntegrationTest < Minitest::Test
         headers["authorization"],
         "1.00",
         chain_id: chain_id,
-        fee_payer: @sponsored
+        fee_payer: @sponsored,
+        splits: @splits
       )
       if result.is_a?(Mpp::Challenge)
         response = Mpp::Server::Decorator.make_challenge_response(result, @handler.realm)

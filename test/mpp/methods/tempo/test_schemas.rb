@@ -3,10 +3,11 @@
 require "test_helper"
 
 class TestSchemas < Minitest::Test
+  SPLIT_RECIPIENT = "0x#{"02" * 20}"
   def test_charge_request_from_hash
     request = Mpp::Methods::Tempo::Schemas::ChargeRequest.from_hash(
       "amount" => "1000000",
-      "currency" => "0x20c0000000000000000000000000000000000000",
+      "currency" => Mpp::Methods::Tempo::Defaults::PATH_USD,
       "recipient" => "0x1234567890abcdef1234567890abcdef12345678"
     )
 
@@ -19,13 +20,33 @@ class TestSchemas < Minitest::Test
   def test_charge_request_with_method_details
     request = Mpp::Methods::Tempo::Schemas::ChargeRequest.from_hash(
       "amount" => "1000000",
-      "currency" => "0x20c0000000000000000000000000000000000000",
+      "currency" => Mpp::Methods::Tempo::Defaults::PATH_USD,
       "recipient" => "0x1234567890abcdef1234567890abcdef12345678",
       "methodDetails" => {"chainId" => 42_431, "feePayer" => true}
     )
 
     assert_equal 42_431, request.method_details.chain_id
     assert request.method_details.fee_payer
+  end
+
+  def test_charge_request_preserves_splits
+    request = Mpp::Methods::Tempo::Schemas::ChargeRequest.from_hash(
+      "amount" => "1000000",
+      "currency" => Mpp::Methods::Tempo::Defaults::PATH_USD,
+      "recipient" => "0x1234567890abcdef1234567890abcdef12345678",
+      "methodDetails" => {
+        "splits" => [{
+          "amount" => "200000",
+          "recipient" => SPLIT_RECIPIENT,
+          "memo" => "0x#{"11" * 32}"
+        }]
+      }
+    )
+
+    split = request.method_details.splits.fetch(0)
+    assert_equal "200000", split.amount
+    assert_equal SPLIT_RECIPIENT, split.recipient
+    assert_equal "0x#{"11" * 32}", split.memo
   end
 
   def test_charge_request_rejects_invalid_currency

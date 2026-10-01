@@ -97,6 +97,18 @@ class TestIntentLifecycle < Minitest::Test
     assert_equal [:validate], intent.calls.map(&:first)
   end
 
+  def test_charge_rejects_splits_for_methods_without_split_support
+    error = assert_raises(ArgumentError) do
+      server_for(TwoPhaseIntent.new).charge(
+        nil,
+        "1.00",
+        splits: [{amount: "0.20", recipient: "partner"}]
+      )
+    end
+
+    assert_includes error.message, "does not support payment splits"
+  end
+
   def test_validation_source_is_optional
     credential = credential_for
     validation = Mpp::Validation.new(

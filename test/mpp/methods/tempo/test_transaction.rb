@@ -224,6 +224,52 @@ class TestTempoTransaction < Minitest::Test
     assert_equal 65, decoded[13].bytesize
   end
 
+  def test_charge_intent_cosigns_split_fee_payer_envelope
+    skip "eth/rlp gems not available" unless eth_and_rlp_available?
+
+    payer = Mpp::Methods::Tempo::Account.from_key("0x#{"11" * 32}")
+    fee_payer = Mpp::Methods::Tempo::Account.from_key("0x#{"22" * 32}")
+    split_recipient = "0x#{"02" * 20}"
+    request = {
+      "amount" => "1000000",
+      "currency" => CURRENCY,
+      "recipient" => RECIPIENT,
+      "methodDetails" => {
+        "chainId" => 42_431,
+        "feePayer" => true,
+        "splits" => [{"amount" => "200000", "recipient" => split_recipient}]
+      }
+    }
+    challenge = Mpp::Challenge.new(
+      id: CHALLENGE_ID,
+      method: "tempo",
+      intent: "charge",
+      request: request,
+      realm: REALM
+    )
+    client = Mpp::Methods::Tempo::TempoMethod.new(account: payer)
+    credential = Mpp::Methods::Tempo::Rpc.stub(:get_tx_params, [42_431, 0, 1]) do
+      Mpp::Methods::Tempo::Rpc.stub(:estimate_gas, 100_000) do
+        client.create_credential(challenge)
+      end
+    end
+    intent = Mpp::Methods::Tempo::ChargeIntent.new
+    Mpp::Methods::Tempo.tempo(intents: {"charge" => intent}, fee_payer: fee_payer)
+
+    signed_raw, = intent.send(
+      :cosign_as_fee_payer,
+      credential.payload["signature"],
+      CURRENCY,
+      request: Mpp::Methods::Tempo::Schemas::ChargeRequest.from_hash(request),
+      challenge: challenge.to_echo
+    )
+    decoded = decode_raw_tx(signed_raw, 0x76)
+
+    assert_equal 2, decoded[4].length
+    assert_equal [800_000, 200_000], decoded[4].map { |call| call[2].unpack1("H*")[72, 64].to_i(16) }
+    assert_equal 3, decoded[11].length
+  end
+
   def test_charge_intent_rejects_fee_payer_envelope_with_access_list
     skip "eth/rlp gems not available" unless eth_and_rlp_available?
 
@@ -432,7 +478,7 @@ class TestTempoTransaction < Minitest::Test
       )
     end
 
-    assert_includes error.message, "no matching payment call found"
+    assert_includes error.message, "memo is not bound to this challenge"
   end
 
   def test_charge_intent_rejects_fee_payer_envelope_with_wrong_challenge_memo
@@ -463,7 +509,7 @@ class TestTempoTransaction < Minitest::Test
       )
     end
 
-    assert_includes error.message, "no matching payment call found"
+    assert_includes error.message, "memo is not bound to this challenge"
   end
 
   def test_charge_intent_rejects_fee_payer_envelope_with_wrong_chain_id
