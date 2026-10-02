@@ -51,6 +51,18 @@ module Mpp
 
         available
       end
+
+      # Currencies to fan out into one offer each, in order. Returns nil when
+      # the offer needs no fan-out: the method accepts at most one currency or
+      # the request already pins a currency.
+      sig { params(method: T.untyped, options: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[String])) }
+      def offer_currencies(method, options)
+        return nil unless options[:currency].nil? && options["currency"].nil?
+        return nil unless method.respond_to?(:currencies)
+
+        currencies = method.currencies
+        (currencies.is_a?(Array) && currencies.length > 1) ? currencies : nil
+      end
     end
   end
 end

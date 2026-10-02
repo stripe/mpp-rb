@@ -42,12 +42,44 @@ if result.is_a?(Mpp::Challenge)
   # Return 402 with WWW-Authenticate header
   resp = Mpp::Server::Decorator.make_challenge_response(result, server.realm)
   # resp["status"], resp["headers"], resp["body"]
+elsif result.is_a?(Mpp::Server::ComposedResult)
+  # Several offers (methods or currencies); see "Accepted currencies"
+  resp = result.to_response if result.payment_required?
+  credential, receipt = result.payment unless result.payment_required?
 else
   credential, receipt = result
   # credential.source — payer address
   # receipt.to_payment_receipt — Payment-Receipt header value
 end
 ```
+
+### Accepted currencies
+
+A Tempo server method offers one charge per accepted currency, in order, and
+accepts a credential for any of them. With the default `chain_id: 4217` (mainnet) the
+defaults are OUSD then USDC.e; with `chain_id: 42431` (Moderato) they are OUSD
+then pathUSD. Other chains, or an explicit `chain_id: nil`, keep the single pathUSD default.
+Several accepted currencies make `charge` return a `Mpp::Server::ComposedResult`.
+
+```ruby
+Mpp::Methods::Tempo.tempo(
+  intents: {"charge" => Mpp::Methods::Tempo::ChargeIntent.new},
+  chain_id: 4217,
+  recipient: "0x0000000000000000000000000000000000000001",
+  currencies: [Mpp::Methods::Tempo::Defaults::USDC] # replaces the defaults
+)
+```
+
+An explicit `currencies:` list replaces the defaults. The deprecated
+`currency:` option accepts exactly one token; pass one or the other. A
+`currency:` passed to `charge` or a compose entry still issues a single offer.
+Sponsored charges choose the fee token independently of the charge currency.
+A local fee payer accepts `fee_payer_allowed_fee_tokens:` when set, otherwise
+pathUSD and the chain's default currency (pathUSD and USDC.e on mainnet,
+pathUSD on Moderato). It pays gas in `fee_token:` when set, otherwise in the
+first allowed token it holds a balance of, otherwise in the first allowed
+token. `fee_token:` is only valid with a local fee payer; hosted sponsors
+choose their own fee token.
 
 If the endpoint already uses `Authorization` (API keys, Bearer tokens), create the server with `requires_auth: true`. Challenges then advertise `header="Payment-Authorization"`, and clients send the Payment credential in that header instead of `Authorization`.
 

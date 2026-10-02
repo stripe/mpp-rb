@@ -502,7 +502,7 @@ class TestPaymentIntentOptions < Minitest::Test
     client = FakeStripeClient.new
     store = Mpp::MemoryStore.new
     intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
-    rail = Mpp::Methods::Tempo.tempo(recipient: TEMPO_ADDRESS, intents: {"charge" => intent})
+    rail = Mpp::Methods::Tempo.tempo(recipient: TEMPO_ADDRESS, currency: Mpp::Methods::Tempo::Defaults::USDC, intents: {"charge" => intent})
     method = Mpp::Methods::Stripe::PaymentIntentMethod.new(method: rail, client: client, network: "tempo")
     server = server_for(method)
     calls = []

@@ -10,6 +10,8 @@ module Mpp
         RPC_URL = "https://rpc.tempo.xyz"
         PATH_USD = "0x20c0000000000000000000000000000000000000"
         USDC = "0x20C000000000000000000000b9537d11c60E8b50"
+        # Same address on mainnet and Moderato.
+        OUSD = "0x20c0000000000000000000006a37DA5C996874BE"
         PATH_USD_DECIMALS = 6
 
         # Testnet (Moderato)
@@ -24,6 +26,14 @@ module Mpp
           CHAIN_ID => USDC,
           TESTNET_CHAIN_ID => PATH_USD
         }.freeze, T::Hash[T.untyped, T.untyped])
+
+        # Chain ID -> ordered currencies a server accepts by default
+        DEFAULT_ACCEPTED_CURRENCIES = T.let({
+          CHAIN_ID => [OUSD, USDC].freeze,
+          TESTNET_CHAIN_ID => [OUSD, PATH_USD].freeze
+        }.freeze, T::Hash[Integer, T::Array[String]])
+
+        ADDRESS_PATTERN = T.let(/\A0x[0-9a-fA-F]{40}\z/, Regexp)
 
         # Chain ID -> default RPC URL mapping
         CHAIN_RPC_URLS = T.let({
@@ -55,6 +65,47 @@ module Mpp
           return PATH_USD if chain_id.nil?
 
           DEFAULT_CURRENCIES.fetch(chain_id, PATH_USD)
+        end
+
+        # Ordered currencies a server offers when none are configured. Unknown
+        # chains keep the single default from default_currency_for_chain.
+        sig { params(chain_id: T.nilable(Integer)).returns(T::Array[String]) }
+        def default_currencies_for_chain(chain_id)
+          defaults = chain_id && DEFAULT_ACCEPTED_CURRENCIES[chain_id]
+          defaults || [default_currency_for_chain(chain_id)]
+        end
+
+        # Resolve the ordered currencies a server method accepts. An explicit
+        # currencies list replaces the chain defaults, and the legacy singular
+        # currency restricts acceptance to exactly that token.
+        sig do
+          params(
+            chain_id: T.nilable(Integer),
+            currency: T.nilable(String),
+            currencies: T.nilable(T::Array[String])
+          ).returns(T::Array[String])
+        end
+        def accepted_currencies(chain_id: nil, currency: nil, currencies: nil)
+          unless currency.nil? || currencies.nil?
+            Kernel.raise ArgumentError, "pass currency: or currencies:, not both"
+          end
+          return [currency] unless currency.nil?
+          return default_currencies_for_chain(chain_id) if currencies.nil?
+
+          Kernel.raise ArgumentError, "currencies must not be empty" if currencies.empty?
+          currencies.each do |address|
+            unless ADDRESS_PATTERN.match?(address.to_s)
+              Kernel.raise ArgumentError, "Invalid Tempo currency address: #{address.inspect}"
+            end
+          end
+          currencies.uniq(&:downcase)
+        end
+
+        # Fee tokens a local fee payer accepts by default: pathUSD, then the
+        # chain's default currency.
+        sig { params(chain_id: T.nilable(Integer)).returns(T::Array[String]) }
+        def default_fee_tokens(chain_id)
+          [PATH_USD, default_currency_for_chain(chain_id)].uniq(&:downcase)
         end
 
         sig { params(chain_id: T.nilable(Integer), testnet: T::Boolean).returns(String) }

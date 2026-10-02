@@ -860,14 +860,18 @@ class TestTempoChargeIntent < Minitest::Test
     raw_tx = signed_transaction(awaiting_fee_payer: true)
     credential = transaction_credential(raw_tx, challenge_id: "challenge-123")
     request = request_hash.merge("methodDetails" => {"chainId" => CHAIN_ID, "feePayer" => true})
-    # PATH_USD is not in the default local sponsor allowlist on mainnet. The
+    # The local sponsor allowlist excludes the configured fee token. The
     # hosted sponsor must retain authority over its own supported fee tokens.
     Mpp::Methods::Tempo.tempo(
-      intents: {"charge" => @intent}, fee_payer: "https://sponsor.example.test"
+      intents: {"charge" => @intent}, fee_payer: "https://sponsor.example.test",
+      fee_payer_allowed_fee_tokens: [Mpp::Methods::Tempo::Defaults::USDC]
     )
     assert @intent.validate(credential, request)
 
-    Mpp::Methods::Tempo.tempo(intents: {"charge" => @intent}, fee_payer: Object.new)
+    Mpp::Methods::Tempo.tempo(
+      intents: {"charge" => @intent}, fee_payer: Object.new,
+      fee_payer_allowed_fee_tokens: [Mpp::Methods::Tempo::Defaults::USDC], fee_token: CURRENCY
+    )
     error = assert_raises(Mpp::VerificationError) { @intent.validate(credential, request) }
     assert_match(/not allowed by fee payer policy/, error.message)
   end

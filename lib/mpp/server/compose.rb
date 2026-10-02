@@ -140,7 +140,7 @@ module Mpp
 
       sig { params(handler: T.untyped, entries: T::Array[T.untyped]).returns(ComposedHandler) }
       def self.from_entries(handler, entries)
-        new(handler: handler, offers: entries.map { |entry| offer_from_entry(handler, entry) })
+        new(handler: handler, offers: entries.flat_map { |entry| offers_from_entry(handler, entry) })
       end
 
       # Flatten nested compositions into a single handler.
@@ -200,8 +200,9 @@ module Mpp
 
       private
 
-      sig { params(handler: T.untyped, entry: T.untyped).returns(ComposeOffer) }
-      def self.offer_from_entry(handler, entry)
+      # A method accepting several currencies yields one offer per currency.
+      sig { params(handler: T.untyped, entry: T.untyped).returns(T::Array[ComposeOffer]) }
+      def self.offers_from_entry(handler, entry)
         unless entry.is_a?(Array) && entry.length == 2
           Kernel.raise ArgumentError, "compose() entries must be [method, options] tuples"
         end
@@ -212,9 +213,13 @@ module Mpp
           Kernel.raise ArgumentError, "compose() options must be a Hash"
         end
 
-        ComposeOffer.new(handler, handler.resolve_method(method_ref), options)
+        method = handler.resolve_method(method_ref)
+        currencies = Mpp::Server::MethodHelper.offer_currencies(method, options)
+        return [ComposeOffer.new(handler, method, options)] if currencies.nil?
+
+        currencies.map { |currency| ComposeOffer.new(handler, method, options.merge(currency: currency)) }
       end
-      private_class_method :offer_from_entry
+      private_class_method :offers_from_entry
 
       sig do
         params(

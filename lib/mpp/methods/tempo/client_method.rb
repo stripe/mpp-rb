@@ -18,15 +18,15 @@ module Mpp
       # Handles client-side credential creation for Tempo payments.
       class TempoMethod
         attr_reader :name, :account, :fee_payer, :fee_payer_allowed_fee_tokens,
-          :root_account, :rpc_url, :chain_id, :currency, :recipient, :decimals, :client_id,
-          :expected_recipients, :relay, :on_payment_success
+          :root_account, :rpc_url, :chain_id, :currency, :currencies, :recipient, :decimals, :client_id,
+          :expected_recipients, :relay, :on_payment_success, :fee_token
         attr_accessor :intents
 
         def initialize(account: nil, fee_payer: nil, root_account: nil,
           rpc_url: Defaults::RPC_URL, chain_id: nil, currency: nil,
           recipient: nil, decimals: 6, client_id: nil,
           expected_recipients: nil, fee_payer_allowed_fee_tokens: nil,
-          relay: nil, on_payment_success: nil, can_offer: nil)
+          relay: nil, on_payment_success: nil, can_offer: nil, currencies: nil, fee_token: nil)
           unless on_payment_success.nil? || on_payment_success.respond_to?(:call)
             raise ArgumentError, "on_payment_success must be callable"
           end
@@ -38,12 +38,15 @@ module Mpp
           @account = account
           @fee_payer = fee_payer
           @relay = relay
+          @fee_token = fee_token
           @fee_payer_allowed_fee_tokens =
             fee_payer_allowed_fee_tokens&.map { |token| token.to_s.downcase }
           @root_account = root_account
           @rpc_url = rpc_url
           @chain_id = chain_id
-          @currency = currency
+          # Ordered currencies offered by a server; the first is the primary.
+          @currencies = (currencies || [currency].compact).dup.freeze
+          @currency = currency || @currencies.first
           @recipient = recipient
           @decimals = decimals
           @client_id = client_id
@@ -263,26 +266,51 @@ module Mpp
       end
 
       # Factory function to create a configured TempoMethod.
-      def self.tempo(intents:, account: nil, fee_payer: nil, chain_id: nil, rpc_url: nil,
+      #
+      # A server offers one charge per accepted currency, in order. Without
+      # `currencies:` it offers OUSD then USDC.e on mainnet and OUSD then
+      # pathUSD on Moderato; other chains keep their single default.
+      # `currencies:` replaces the defaults. The deprecated `currency:` accepts
+      # exactly that token. `currency` keeps its previous default for clients.
+      #
+      # A local fee payer pays gas in `fee_token:` when set, else in the first
+      # allowed fee token it holds, independent of the charge currency.
+      def self.tempo(intents:, account: nil, fee_payer: nil, chain_id: Defaults::CHAIN_ID, rpc_url: nil,
         root_account: nil, currency: nil, recipient: nil, decimals: 6, client_id: nil,
         expected_recipients: nil, fee_payer_allowed_fee_tokens: nil, relay: nil,
-        on_payment_success: nil, can_offer: nil)
+        on_payment_success: nil, can_offer: nil, currencies: nil, fee_token: nil)
         rpc_url ||= chain_id ? Defaults.rpc_url_for_chain(chain_id) : Defaults::RPC_URL
-        currency ||= Defaults.default_currency_for_chain(chain_id)
 
         if fee_payer == true
           raise ArgumentError, "fee_payer: true requires account:" unless account
 
           fee_payer = account
         end
+        fee_payer = FeePayerClient.resolve_optional(fee_payer)
+        if fee_token && (fee_payer.nil? || FeePayerClient.hosted_config?(fee_payer))
+          raise ArgumentError, "fee_token can only be configured for a local fee payer"
+        end
+
+        if fee_token && !Defaults::ADDRESS_PATTERN.match?(fee_token)
+          raise ArgumentError, "Invalid Tempo fee token address: #{fee_token.inspect}"
+        end
+        if fee_payer_allowed_fee_tokens&.empty?
+          raise ArgumentError, "fee_payer_allowed_fee_tokens must contain at least one token"
+        end
+
+        legacy_currency = Defaults.default_currency_for_chain(chain_id)
+        primary_currency = currency || currencies&.first || legacy_currency
+        # `currency:` is deprecated in favor of `currencies: [currency]`.
+        currencies = Defaults.accepted_currencies(chain_id: chain_id, currency: currency, currencies: currencies)
 
         method = TempoMethod.new(
           account: account,
-          fee_payer: FeePayerClient.resolve_optional(fee_payer),
+          fee_payer: fee_payer,
           rpc_url: rpc_url,
           chain_id: chain_id,
           root_account: root_account,
-          currency: currency,
+          currency: primary_currency,
+          currencies: currencies,
           recipient: recipient,
           decimals: decimals,
           client_id: client_id,
@@ -290,7 +318,8 @@ module Mpp
           fee_payer_allowed_fee_tokens: fee_payer_allowed_fee_tokens,
           relay: Relay.resolve_optional(relay),
           on_payment_success: on_payment_success,
-          can_offer: can_offer
+          can_offer: can_offer,
+          fee_token: fee_token
         )
 
         intents.each_value do |intent|

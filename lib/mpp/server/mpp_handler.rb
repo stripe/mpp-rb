@@ -130,9 +130,10 @@ module Mpp
 
       # Handle a charge intent.
       #
-      # With a single registered charge method this returns Challenge or
-      # [Credential, Receipt]. With multiple charge methods it implicitly
-      # composes them and returns a ComposedResult.
+      # With a single registered charge method offering a single currency this
+      # returns Challenge or [Credential, Receipt]. With multiple charge methods,
+      # or a method accepting several currencies, it implicitly composes one
+      # offer per method and currency and returns a ComposedResult.
       sig { params(authorization: T.nilable(String), amount: String, kwargs: T.untyped).returns(T.untyped) }
       def charge(authorization, amount, **kwargs)
         charge_methods = @methods.select { |candidate| candidate.intents.key?("charge") }
@@ -142,7 +143,7 @@ module Mpp
         offer_opts = kwargs.except(*REQUEST_OPTION_KEYS)
         payment = payment_credential_value(authorization, request_opts[:payment_authorization])
 
-        if charge_methods.length == 1
+        if charge_methods.length == 1 && MethodHelper.offer_currencies(charge_methods.first, offer_opts).nil?
           return charge_one(
             charge_methods.first,
             payment,
@@ -225,7 +226,7 @@ module Mpp
         extra = kwargs[:extra]
         mppx_scope = kwargs[:mppx_scope]
 
-        resolved_currency = currency || (method.respond_to?(:currency) ? method.currency : nil)
+        resolved_currency = currency || primary_currency(method)
         resolved_recipient = recipient || (method.respond_to?(:recipient) ? method.recipient : nil)
         raise ArgumentError, "currency must be set on the method or passed to charge()" unless resolved_currency
         raise ArgumentError, "recipient must be set on the method or passed to charge()" unless resolved_recipient
@@ -293,6 +294,15 @@ module Mpp
         raise ArgumentError, "duplicate payment method names: #{duplicates.join(", ")}" unless duplicates.empty?
 
         list
+      end
+
+      # A method's first accepted currency, else its singular currency.
+      sig { params(method: T.untyped).returns(T.untyped) }
+      def primary_currency(method)
+        currencies = method.respond_to?(:currencies) ? method.currencies : nil
+        return currencies.first if currencies.is_a?(Array) && !currencies.empty?
+
+        method.respond_to?(:currency) ? method.currency : nil
       end
 
       sig { params(key: String).returns(T.untyped) }

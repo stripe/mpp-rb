@@ -41,6 +41,10 @@ module Mpp
           @_method&.fee_payer_allowed_fee_tokens
         end
 
+        def configured_fee_token
+          @_method&.fee_token
+        end
+
         def relay
           @_method&.relay
         end
@@ -203,7 +207,7 @@ module Mpp
             raise Mpp::VerificationError, "No fee payer configured" unless payer
 
             if local_fee_payer?(payer)
-              raw_tx, simulate_payload = cosign_as_fee_payer(raw_tx, request.currency, request: request, challenge: credential.challenge)
+              raw_tx, simulate_payload = cosign_as_fee_payer(raw_tx, nil, request: request, challenge: credential.challenge)
             else
               raw_tx = payer.cosign(raw_tx)
             end
@@ -384,7 +388,7 @@ module Mpp
             # Move existing local sponsorship checks before signing. Hosted
             # payers retain their own policy and terminal credential validation.
             if local_fee_payer?(payer)
-              prepare_fee_payer_transaction(payload.signature, request.currency, request: request, challenge: credential.challenge)
+              prepare_fee_payer_transaction(payload.signature, nil, request: request, challenge: credential.challenge)
             end
           end
           true
@@ -516,10 +520,14 @@ module Mpp
           !FeePayerClient.hosted_config?(payer)
         end
 
+        # A nil fee_token selects the configured fee token, else the first
+        # allowed fee token the fee payer holds, else the first allowed.
         def cosign_as_fee_payer(raw_tx, fee_token, request: nil, challenge: nil)
           raise Mpp::VerificationError, "No fee payer account configured" unless fee_payer
 
-          tx_to_sign, recovered_addr = prepare_fee_payer_transaction(raw_tx, fee_token, request: request, challenge: challenge)
+          tx_to_sign, recovered_addr = prepare_fee_payer_transaction(
+            raw_tx, fee_token, request: request, challenge: challenge, select_funded: true
+          )
           fee_payer_sig = fee_payer.sign_hash(tx_to_sign.fee_payer_signature_hash)
           signed = tx_to_sign.with(fee_payer_signature: fee_payer_sig)
           raw_tx = "0x#{signed.encoded_2718.unpack1("H*")}"
@@ -527,8 +535,9 @@ module Mpp
           [raw_tx, build_simulate_payload(tx_to_sign, recovered_addr, fee_payer_sig)]
         end
 
-        # Pure sponsorship checks, shared by validation and terminal signing.
-        def prepare_fee_payer_transaction(raw_tx, fee_token, request: nil, challenge: nil)
+        # Sponsorship checks, shared by validation and terminal signing. Only
+        # select_funded (terminal signing) reads fee payer balances over RPC.
+        def prepare_fee_payer_transaction(raw_tx, fee_token, request: nil, challenge: nil, select_funded: false)
           require "eth"
           require "rlp"
 
@@ -650,11 +659,11 @@ module Mpp
           end
 
           # Build the final transaction with fee_token set
-          resolved_fee_token = fee_token || request&.currency
+          allowed_fee_tokens = fee_payer_allowed_fee_tokens || Defaults.default_fee_tokens(chain_id)
+          resolved_fee_token = fee_token || configured_fee_token ||
+            (select_funded && funded_fee_token(allowed_fee_tokens)) || allowed_fee_tokens.first
           raise Mpp::VerificationError, "No fee token available" unless resolved_fee_token
 
-          allowed_fee_tokens = fee_payer_allowed_fee_tokens ||
-            [Defaults.default_currency_for_chain(chain_id).downcase]
           unless allowed_fee_tokens.map(&:downcase).include?(resolved_fee_token.downcase)
             raise Mpp::VerificationError,
               "Fee token #{resolved_fee_token} is not allowed by fee payer policy"
@@ -709,6 +718,17 @@ module Mpp
             "traceTransfers" => false,
             "returnFullTransactions" => false
           }
+        end
+
+        # First allowed fee token with a nonzero fee payer balance.
+        def funded_fee_token(tokens)
+          owner = fee_payer.address.delete_prefix("0x").downcase.rjust(64, "0")
+          tokens.find do |token|
+            balance = Rpc.call(get_rpc_url, "eth_call", [{"to" => token, "data" => "0x70a08231#{owner}"}, "latest"])
+            balance.is_a?(String) && balance.delete_prefix("0x").to_i(16) > 0
+          rescue
+            false
+          end
         end
 
         # Simulate the co-signed tx and raise if it would revert. Fails closed:
