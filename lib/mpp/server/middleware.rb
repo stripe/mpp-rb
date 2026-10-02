@@ -66,8 +66,11 @@ module Mpp
         status, headers, body = @app.call(env)
         if success_status?(status)
           headers["Payment-Receipt"] = receipt.to_payment_receipt
+          headers["Cache-Control"] = self.class.with_private_cache_control(headers["Cache-Control"])
           extra_headers.each { |key, value| headers[key] = value unless value.nil? }
           decorate_single_method_receipt(headers, credential, receipt, payment_signature)
+        else
+          headers["Cache-Control"] = "no-store"
         end
         vary = [credential_vary_field]
         vary << "PAYMENT-SIGNATURE" if x402_bound?(headers, payment_signature)
@@ -76,10 +79,18 @@ module Mpp
         [status, headers, body]
       end
 
+      # Merge `private` into an existing Cache-Control value without
+      # discarding the app's own directives.
+      sig { params(value: T.nilable(String)).returns(String) }
+      def self.with_private_cache_control(value)
+        return "private" if value.nil? || value.strip.empty?
+        return value if value.split(",").any? { |d| d.strip.casecmp?("private") }
+
+        "#{value}, private"
+      end
+
       sig { params(headers: T::Hash[T.untyped, T.untyped], vary: T::Array[String]).void }
       def self.mark_authorization_bound_response(headers, vary: ["Authorization"])
-        headers["Cache-Control"] = "no-store"
-
         vary_values = headers["Vary"].to_s.split(",").map do |value|
           value.strip.downcase
         end

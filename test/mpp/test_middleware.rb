@@ -91,9 +91,19 @@ class TestMiddleware < Minitest::Test
 
     assert_equal 200, status
     assert headers.key?("Payment-Receipt")
-    assert_equal "no-store", headers["Cache-Control"]
+    assert_equal "private", headers["Cache-Control"]
     assert_vary_authorization headers
     assert_equal ["OK"], body
+  end
+
+  def test_preserves_downstream_cache_directives_on_receipt_response
+    _, headers, = call_paid(->(_env) { [200, {"Cache-Control" => "max-age=60"}, ["OK"]] })
+
+    assert_equal "max-age=60, private", headers["Cache-Control"]
+
+    _, headers, = call_paid(->(_env) { [200, {"Cache-Control" => "max-age=60, private"}, ["OK"]] })
+
+    assert_equal "max-age=60, private", headers["Cache-Control"]
   end
 
   def test_does_not_attach_receipt_when_downstream_returns_500
@@ -101,6 +111,7 @@ class TestMiddleware < Minitest::Test
 
     assert_equal 500, status
     refute headers.key?("Payment-Receipt")
+    assert_equal "no-store", headers["Cache-Control"]
     assert_equal ["boom"], body
   end
 
