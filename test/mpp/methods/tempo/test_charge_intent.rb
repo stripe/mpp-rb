@@ -375,6 +375,69 @@ class TestTempoChargeIntent < Minitest::Test
     assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{chain_hash.downcase}")
   end
 
+  def test_transaction_credential_retries_pending_receipt_with_canonical_hash
+    raw_tx = "0xabcdef1234567890"
+    local_hash = raw_transaction_hash(raw_tx)
+    chain_hash = "0x#{"12" * 32}"
+    challenge_id = "challenge-123"
+    memo = Mpp::Methods::Tempo::Attribution.encode(server_id: REALM, challenge_id: challenge_id)
+    receipt_data = receipt([transfer_log(memo: memo)])
+    store = Mpp::MemoryStore.new
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    credential = transaction_credential(raw_tx, challenge_id: challenge_id)
+    receipt_available = false
+    broadcasts = 0
+
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(_rpc_url, method, params) {
+      case method
+      when "eth_sendRawTransaction"
+        broadcasts += 1
+        chain_hash
+      when "eth_getTransactionReceipt"
+        assert_equal [chain_hash], params
+        receipt_data if receipt_available
+      else
+        raise "unexpected RPC method: #{method}"
+      end
+    }) do
+      intent.stub(:sleep, ->(*_) {}) do
+        assert_raises(Mpp::TransactionPendingError) { intent.verify(credential, request_hash) }
+      end
+
+      receipt_available = true
+      # A new intent must recover using only the shared store.
+      retry_intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+      assert_equal chain_hash, retry_intent.verify(credential, request_hash).reference
+      assert_raises(Mpp::VerificationError) { retry_intent.verify(credential, request_hash) }
+      hash_proof = Mpp::Credential.new(challenge: credential.challenge,
+        payload: {"type" => "hash", "hash" => chain_hash})
+      assert_raises(Mpp::VerificationError) { retry_intent.verify(hash_proof, request_hash) }
+    end
+
+    assert_equal 1, broadcasts
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{local_hash}")
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get("mpp:charge:#{chain_hash}")
+  end
+
+  def test_pending_retry_rejects_consumed_canonical_hash
+    raw_tx = "0xabcdef1234567890"
+    raw_key = "mpp:charge:#{raw_transaction_hash(raw_tx)}"
+    chain_hash = "0x#{"12" * 32}"
+    store = Mpp::MemoryStore.new
+    store.put(raw_key, Mpp::Methods::Tempo::TRANSACTION_PENDING)
+    store.put("#{raw_key}:canonical", chain_hash)
+    store.put("mpp:charge:#{chain_hash}", Mpp::Methods::Tempo::TRANSACTION_VERIFIED)
+    intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
+    credential = transaction_credential(raw_tx, challenge_id: "challenge-123")
+
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_) { flunk "consumed transaction must not be polled or rebroadcast" }) do
+      error = assert_raises(Mpp::VerificationError) { intent.verify(credential, request_hash) }
+      assert_match(/Transaction hash already used/, error.message)
+    end
+
+    assert_equal Mpp::Methods::Tempo::TRANSACTION_VERIFIED, store.get(raw_key)
+  end
+
   def test_rebase_keeps_raw_claim_while_canonical_is_pending
     store = Mpp::MemoryStore.new
     intent = Mpp::Methods::Tempo::ChargeIntent.new(rpc_url: "https://rpc.example.test", store: store)
