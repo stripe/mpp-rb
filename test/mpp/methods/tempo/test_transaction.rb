@@ -60,6 +60,7 @@ class TestTempoTransaction < Minitest::Test
     decoded = decode_raw_tx(raw_tx, 0x76)
 
     assert_equal 14, decoded.length
+    assert_equal "", decoded[9]
     assert_equal CURRENCY.downcase.delete_prefix("0x"), decoded[10].unpack1("H*")
     assert_equal "", decoded[11]
     assert_equal [], decoded[12]
@@ -69,26 +70,36 @@ class TestTempoTransaction < Minitest::Test
   def test_awaiting_fee_payer_builds_decodable_0x78_envelope
     skip "eth/rlp gems not available" unless eth_and_rlp_available?
 
-    raw_tx, = Mpp::Methods::Tempo::Transaction.build_signed_transfer(
-      account: FakeAccount.new(ACCOUNT, "\x22" * 64 + "\x1c"),
-      chain_id: 42_431,
-      gas_limit: 1_000_000,
-      gas_price: 1,
-      nonce: 0,
-      nonce_key: (1 << 256) - 1,
-      currency: CURRENCY,
-      transfer_data: transfer_data,
-      valid_before: 9_999_999_999,
-      awaiting_fee_payer: true
-    )
+    raw_tx = Mpp::Methods::Tempo::Transaction.stub(:random_valid_after, 1_234_567_890) do
+      Mpp::Methods::Tempo::Transaction.build_signed_transfer(
+        account: FakeAccount.new(ACCOUNT, "\x22" * 64 + "\x1c"),
+        chain_id: 42_431,
+        gas_limit: 1_000_000,
+        gas_price: 1,
+        nonce: 0,
+        nonce_key: (1 << 256) - 1,
+        currency: CURRENCY,
+        transfer_data: transfer_data,
+        valid_before: 9_999_999_999,
+        awaiting_fee_payer: true
+      ).first
+    end
 
     decoded = decode_raw_tx(raw_tx, 0x78)
 
     assert_equal 14, decoded.length
+    assert_equal 1_234_567_890, decoded[9].unpack1("H*").to_i(16)
     assert_equal "", decoded[10]
     assert_equal ACCOUNT.downcase.delete_prefix("0x"), decoded[11].unpack1("H*")
     assert_equal [], decoded[12]
     assert_equal "\x22" * 64 + "\x01", decoded[13]
+  end
+
+  def test_random_valid_after_is_safely_in_the_past
+    value = Mpp::Methods::Tempo::Transaction.random_valid_after
+
+    assert_operator value, :>=, 0
+    assert_operator value, :<, Time.now.to_i - 60
   end
 
   def test_fee_payer_signature_encodes_as_tuple_in_field_11

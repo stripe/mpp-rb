@@ -1,11 +1,14 @@
 # typed: false
 # frozen_string_literal: true
 
+require "securerandom"
+
 module Mpp
   module Methods
     module Tempo
       module Transaction
         TYPE_ID = 0x76
+        VALID_AFTER_BUFFER_SECS = 60
         EMPTY_SIGNATURE = "\x00".b
         EMPTY_LIST = [].freeze
 
@@ -170,7 +173,9 @@ module Mpp
 
         def build_signed_transfer(account:, chain_id:, gas_limit:, gas_price:, nonce:, nonce_key:,
           currency:, transfer_data:, max_priority_fee_per_gas: nil, max_fee_per_gas: nil,
-          valid_before: nil, awaiting_fee_payer: false)
+          valid_before: nil, valid_after: nil, awaiting_fee_payer: false)
+          valid_after ||= random_valid_after if awaiting_fee_payer
+
           tx = SignedTransaction.new(
             chain_id: chain_id,
             max_priority_fee_per_gas: max_priority_fee_per_gas || gas_price,
@@ -181,7 +186,7 @@ module Mpp
             nonce_key: nonce_key,
             nonce: nonce,
             valid_before: valid_before,
-            valid_after: nil,
+            valid_after: valid_after,
             fee_token: awaiting_fee_payer ? nil : currency,
             sender_signature: nil,
             fee_payer_signature: EMPTY_SIGNATURE,
@@ -195,6 +200,15 @@ module Mpp
           raw = awaiting_fee_payer ? FeePayer.encode(signed) : signed.encoded_2718
 
           ["0x#{raw.unpack1("H*")}", chain_id]
+        end
+
+        # Use a random timestamp safely in the past to distinguish otherwise-identical
+        # expiring-nonce transactions without delaying when they become valid.
+        def random_valid_after
+          latest = Time.now.to_i - VALID_AFTER_BUFFER_SECS
+          return 0 unless latest.positive?
+
+          SecureRandom.random_number(latest)
         end
       end
     end
