@@ -148,7 +148,7 @@ class TestEvmCharge < Minitest::Test
     )
     handler = Mpp::Server::MppHandler.new(method: method, realm: REALM, secret_key: SECRET)
     challenge = handler.charge(nil, "0.01", body: '{"query":"paid"}')
-    payload = x402_payload(challenge)
+    payload = x402_payload(challenge, bound: false)
     result = handler.charge(
       nil,
       "0.01",
@@ -158,6 +158,69 @@ class TestEvmCharge < Minitest::Test
     )
 
     assert_instance_of Mpp::Challenge, result
+  end
+
+  def test_bodyless_get_rejects_payment_without_a_signed_resource_binding
+    challenge = @handler.charge(nil, "0.01")
+    payload = x402_payload(challenge, bound: false)
+
+    [:resource, :required].each do |route_binding|
+      [payload, payload.except("resource")].each do |candidate|
+        assert_raises(Mpp::VerificationFailedError) do
+          Mpp::X402::Server.bind_credential(
+            payment_payload: candidate,
+            requirements: requirements_for(challenge),
+            resource_url: URL,
+            challenge: challenge,
+            body: nil,
+            route_binding: route_binding,
+            http_method: "GET"
+          )
+        end
+      end
+    end
+
+    result = @handler.charge(nil, "0.01", payment_signature: encode_signature(payload.except("resource")), url: URL, http_method: "GET")
+    assert_instance_of Mpp::Challenge, result
+  end
+
+  def test_changing_the_unsigned_resource_cannot_rescope_a_signed_payment
+    challenge = @handler.charge(nil, "0.01")
+    payload = x402_payload(challenge, resource_url: "https://api.example.com/tool-a", http_method: "GET")
+    payload["resource"] = {"url" => URL}
+
+    error = assert_raises(Mpp::VerificationFailedError) do
+      Mpp::X402::Server.bind_credential(
+        payment_payload: payload,
+        requirements: requirements_for(challenge),
+        resource_url: URL,
+        challenge: challenge,
+        body: nil,
+        route_binding: :resource,
+        http_method: "GET"
+      )
+    end
+    assert_match(/nonce does not match route binding/, error.message)
+  end
+
+  def test_required_binding_accepts_a_signed_bodyless_get
+    method = Mpp::Methods::Evm.charge(
+      currency: Mpp::Methods::Evm::Assets::BASE_SEPOLIA_USDC,
+      recipient: RECIPIENT,
+      x402: {facilitator: FACILITATOR, route_binding: :required}
+    )
+    handler = Mpp::Server::MppHandler.new(method: method, realm: REALM, secret_key: SECRET)
+    challenge = handler.charge(nil, "0.01")
+    payload = x402_payload(challenge, http_method: "GET")
+    stub_facilitator(transaction: "0xsettled")
+
+    result = nil
+    Mpp::Methods::Evm::Authorization.stub(:recover, PAYER) do
+      result = handler.charge(nil, "0.01", payment_signature: encode_signature(payload), url: URL, http_method: "GET")
+    end
+
+    refute_instance_of Mpp::Challenge, result
+    assert_equal "0xsettled", result.last.reference
   end
 
   def test_successful_x402_payment_settles_via_facilitator
@@ -329,13 +392,24 @@ class TestEvmCharge < Minitest::Test
     )
   end
 
-  def x402_payload(challenge, accepted_overrides: {}, resource_url: URL)
-    {
-      "accepted" => requirements_for(challenge).merge(accepted_overrides),
+  def x402_payload(challenge, accepted_overrides: {}, resource_url: URL, bound: true, http_method: nil)
+    accepted = requirements_for(challenge).merge(accepted_overrides)
+    extensions = Mpp::X402::Server.route_extensions(challenge, http_method) || {
+      Mpp::X402::MPPX_EXTENSION_KEY => {"info" => {}, "schema" => Mpp::X402::MPPX_ROUTE_BINDING_SCHEMA}
+    }
+    extensions.fetch(Mpp::X402::MPPX_EXTENSION_KEY).fetch("info")["nonce"] = "client-route-nonce"
+    nonce = if bound
+      Mpp::X402::Server.route_nonce(accepted: accepted, resource: {"url" => resource_url}, extensions: extensions)
+    else
+      "0x#{"11" * 32}"
+    end
+
+    result = {
+      "accepted" => accepted,
       "payload" => {
         "authorization" => {
           "from" => PAYER,
-          "nonce" => "0x#{"11" * 32}",
+          "nonce" => nonce,
           "to" => RECIPIENT,
           "validAfter" => "0",
           "validBefore" => (Time.now.to_i + 600).to_s,
@@ -346,6 +420,8 @@ class TestEvmCharge < Minitest::Test
       "resource" => {"url" => resource_url},
       "x402Version" => 2
     }
+    result["extensions"] = extensions if bound
+    result
   end
 
   def encode_signature(payload)

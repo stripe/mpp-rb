@@ -229,6 +229,15 @@ x402: {facilitator: {url: cdp_url, headers: ->(path) { cdp_headers(path) }}}
 x402: {facilitator: cdp_client}
 ```
 
+For EIP-3009 payments, the URL in the x402 `resource` field is not signed.
+Both `route_binding: :resource` (the default) and `route_binding: :required`
+therefore require a route-bound `mppx` extension and a matching resource URL.
+The payer must sign the nonce produced by `Mpp::X402::Server.route_nonce` from
+the accepted requirements, resource, and extensions. A client using an unrelated
+EIP-3009 nonce receives another 402, even if its unsigned `resource` field
+matches. Pass the request URL to `handler.charge`; pass the HTTP method as well
+when using `:required` or charging a request with a body or metadata.
+
 Tempo charge can sponsor gas through a hosted fee payer, or skip local RPC by sending credentials to a Tempo API-compatible relay. Both use the same `{url:, headers:}` shape as the x402 facilitator:
 
 ```ruby

@@ -34,7 +34,9 @@ Native MPP clients (including `mppx`) pay via `Authorization: Payment`:
 npx mppx http://localhost:4567/paid
 ```
 
-x402 exact clients read `PAYMENT-REQUIRED` and retry with `PAYMENT-SIGNATURE`. Inspect the dual-speak 402:
+x402 exact clients read `PAYMENT-REQUIRED` and retry with `PAYMENT-SIGNATURE`.
+They must use the route-bound `mppx` nonce described in the root README; a
+standard EIP-3009 nonce does not authorize this resource. Inspect the dual-speak 402:
 
 ```sh
 curl -i http://localhost:4567/paid

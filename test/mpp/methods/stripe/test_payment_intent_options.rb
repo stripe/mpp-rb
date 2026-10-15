@@ -419,12 +419,22 @@ class TestPaymentIntentOptions < Minitest::Test
       authorization: method.authorization,
       max_timeout_seconds: 300
     )
+    extensions = {
+      Mpp::X402::MPPX_EXTENSION_KEY => {
+        "info" => {"nonce" => "client-route-nonce"},
+        "schema" => Mpp::X402::MPPX_ROUTE_BINDING_SCHEMA
+      }
+    }
     payload = {
       "accepted" => requirements,
       "payload" => {
         "authorization" => {
           "from" => BASE_PAYER,
-          "nonce" => "0x#{"11" * 32}",
+          "nonce" => Mpp::X402::Server.route_nonce(
+            accepted: requirements,
+            resource: {"url" => PAID_URL},
+            extensions: extensions
+          ),
           "to" => BASE_ADDRESS,
           "validAfter" => "0",
           "validBefore" => (Time.now.to_i + 600).to_s,
@@ -432,6 +442,7 @@ class TestPaymentIntentOptions < Minitest::Test
         },
         "signature" => "0x#{"22" * 65}"
       },
+      "extensions" => extensions,
       "resource" => {"url" => PAID_URL},
       "x402Version" => 2
     }

@@ -145,43 +145,43 @@ module Mpp
 
         assert_body_digest!(challenge, body)
 
-        expected_resource = {"url" => resource_url}
-        client_nonce = payment_payload.dig("extensions", MPPX_EXTENSION_KEY, "info", "nonce")
-        route_bound = !client_nonce.nil?
-        route_requires_binding = !challenge.digest.nil? || !challenge.opaque.nil?
-
-        if route_requires_binding && !route_bound && route_binding == :required
-          Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 payment payload does not bind required route metadata")
+        if resource_url.nil? || resource_url.empty?
+          Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 route resource URL is required for binding")
+        end
+        if (route_binding == :required || challenge.digest || challenge.opaque) && (http_method.nil? || http_method.empty?)
+          Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 HTTP method is required for route binding")
         end
 
+        expected_resource = {"url" => resource_url}
         payload_resource = payment_payload["resource"]
-        if route_bound
-          unless payload_resource.is_a?(Hash) && payload_resource["url"] == expected_resource["url"]
-            Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 payment payload resource does not match route resource")
-          end
-          expected_extensions = route_extensions(challenge, http_method) || {}
-          unless contains_extensions?(payment_payload["extensions"], expected_extensions)
-            Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 payment payload extensions do not match route binding")
-          end
-        elsif resource_url
-          if payload_resource.is_a?(Hash) && payload_resource["url"] != resource_url
-            Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 payment payload resource does not match route resource")
-          end
-          if route_requires_binding && (payload_resource.nil? || payload_resource["url"] != resource_url)
-            Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 payment payload resource does not match route resource")
-          end
+        unless payload_resource.is_a?(Hash) && payload_resource["url"] == resource_url
+          Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 payment payload resource does not match route resource")
+        end
+
+        # The x402 resource field is unsigned. Only the EIP-3009 nonce can bind
+        # the authorization to this resource, even for a bodyless GET.
+        extensions = payment_payload["extensions"]
+        extension = extensions[MPPX_EXTENSION_KEY] if extensions.is_a?(Hash)
+        info = extension["info"] if extension.is_a?(Hash)
+        client_nonce = info["nonce"] if info.is_a?(Hash)
+        unless client_nonce.is_a?(String) && !client_nonce.empty?
+          reason = (route_binding == :required) ? "x402 payment payload does not bind required route metadata" : "x402 payment payload does not bind route resource"
+          Kernel.raise Mpp::VerificationFailedError.new(reason: reason)
+        end
+
+        expected_extensions = route_extensions(challenge, http_method) || {}
+        unless contains_extensions?(extensions, expected_extensions)
+          Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 payment payload extensions do not match route binding")
         end
 
         authorization = payload_to_authorization(payment_payload)
-        if route_bound
-          expected_nonce = route_nonce(
-            accepted: requirements,
-            extensions: payment_payload["extensions"],
-            resource: expected_resource
-          )
-          unless authorization["nonce"].to_s.downcase == expected_nonce.downcase
-            Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 authorization nonce does not match route binding")
-          end
+        expected_nonce = route_nonce(
+          accepted: requirements,
+          extensions: extensions,
+          resource: expected_resource
+        )
+        unless authorization["nonce"].to_s.downcase == expected_nonce.downcase
+          Kernel.raise Mpp::VerificationFailedError.new(reason: "x402 authorization nonce does not match route binding")
         end
 
         authorization
