@@ -204,9 +204,11 @@ module Mpp
 
       sig { params(www_auth_headers: T.untyped, input: T.untyped, response: T.untyped).returns(T::Array[T.untyped]) }
       def find_matching_challenge(www_auth_headers, input: nil, response: nil)
+        challenges = []
         www_auth_headers.each do |header|
           Mpp::Challenge.www_authenticate_chunks(header).each do |chunk|
             parsed = Mpp::Challenge.from_www_authenticate(chunk)
+            challenges << parsed
             return [parsed, @methods[parsed.method]] if @methods.key?(parsed.method)
           rescue Mpp::ParseError => e
             # Skip a malformed challenge but keep scanning the rest: a bad chunk
@@ -221,6 +223,20 @@ module Mpp
             end
             next
           end
+        end
+        unless challenges.empty?
+          error = Mpp::PaymentMethodUnsupportedError.new(
+            method: challenges.map { |challenge| "#{challenge.method}/#{challenge.intent}" }.uniq.join(", ")
+          )
+          if @events.has_handlers?(Mpp::Events::PAYMENT_FAILED)
+            @events.emit(Mpp::Events::PAYMENT_FAILED, {
+              challenges: challenges,
+              error: error,
+              input: input,
+              response: response
+            })
+          end
+          raise error
         end
         [nil, nil]
       end
