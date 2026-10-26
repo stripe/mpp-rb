@@ -316,6 +316,85 @@ class TestMiddleware < Minitest::Test
     assert_equal body, seen_body
   end
 
+  def test_body_digest_covers_bytes_read_by_pricing
+    pricing = lambda { |env|
+      env["rack.input"].read(2)
+      {amount: "1.00"}
+    }
+    seen_body = nil
+    app = lambda { |env|
+      seen_body = env["rack.input"].read
+      [200, {}, ["OK"]]
+    }
+    middleware = Mpp::Server::Middleware.new(app, handler: mock_handler, pricing: pricing)
+
+    status, headers, _body = middleware.call(
+      minimal_env.merge("rack.input" => StringIO.new("A|same-payload"))
+    )
+    assert_equal 402, status
+
+    challenge = Mpp::Challenge.from_www_authenticate(headers["WWW-Authenticate"])
+    assert_equal Mpp::BodyDigest.compute("A|same-payload"), challenge.digest
+    credential = Mpp::Credential.new(
+      challenge: challenge.to_echo,
+      payload: {"type" => "test", "data" => "ok"}
+    )
+
+    status, headers, _body = middleware.call(
+      minimal_env.merge(
+        "HTTP_AUTHORIZATION" => credential.to_authorization,
+        "rack.input" => StringIO.new("B|same-payload")
+      )
+    )
+    assert_equal 402, status
+    refute headers.key?("Payment-Receipt")
+    assert_nil seen_body
+
+    status, headers, _body = middleware.call(
+      minimal_env.merge(
+        "HTTP_AUTHORIZATION" => credential.to_authorization,
+        "rack.input" => StringIO.new("A|same-payload")
+      )
+    )
+    assert_equal 200, status
+    assert headers.key?("Payment-Receipt")
+    assert_equal "A|same-payload", seen_body
+  end
+
+  def test_body_digest_covers_bytes_read_by_pricing_on_non_rewindable_input
+    pricing = lambda { |env|
+      env["rack.input"].read(2)
+      env["rack.input"].rewind
+      {amount: "1.00"}
+    }
+    app = ->(_env) { [200, {}, ["OK"]] }
+    middleware = Mpp::Server::Middleware.new(app, handler: mock_handler, pricing: pricing)
+
+    status, headers, _body = middleware.call(
+      minimal_env.merge("rack.input" => CountingInput.new("A|same-payload"))
+    )
+
+    assert_equal 402, status
+    challenge = Mpp::Challenge.from_www_authenticate(headers["WWW-Authenticate"])
+    assert_equal Mpp::BodyDigest.compute("A|same-payload"), challenge.digest
+  end
+
+  def test_free_route_receives_original_input
+    input = StringIO.new("free-body")
+    seen_input = nil
+    app = lambda { |env|
+      seen_input = env["rack.input"]
+      [200, {}, ["OK"]]
+    }
+    pricing = ->(_env) {}
+    middleware = Mpp::Server::Middleware.new(app, handler: mock_handler, pricing: pricing)
+
+    status, _headers, _body = middleware.call(minimal_env.merge("rack.input" => input))
+
+    assert_equal 200, status
+    assert_same input, seen_input
+  end
+
   def test_compose_handler_returns_multiple_www_authenticate
     tempo = mock_named_method("tempo", Mpp::Methods::Tempo::Defaults::PATH_USD, "0x#{"0" * 39}1")
     stripe = mock_named_method("stripe", "usd", "acct_123", decimals: 2)

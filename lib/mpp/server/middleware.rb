@@ -33,8 +33,13 @@ module Mpp
 
       sig { params(env: T.untyped).returns(T::Array[T.untyped]) }
       def call(env)
+        original_input = env["rack.input"]
+        body_capture = capture_request_body(env)
         charge_opts = @pricing.call(env)
-        return @app.call(env) unless charge_opts
+        unless charge_opts
+          env["rack.input"] = original_input if body_capture && env["rack.input"].equal?(body_capture)
+          return @app.call(env)
+        end
 
         authorization = env["HTTP_AUTHORIZATION"]
         payment_authorization = env["HTTP_PAYMENT_AUTHORIZATION"]
@@ -42,7 +47,6 @@ module Mpp
         accept_payment = env["HTTP_ACCEPT_PAYMENT"]
         http_method = env["REQUEST_METHOD"]
         url = request_url(env)
-        body_capture = capture_request_body(env)
 
         request_body = body_capture&.materialize
         env["rack.input"] = StringIO.new(request_body || "") if body_capture
@@ -278,8 +282,11 @@ module Mpp
 
         sig { returns(T.untyped) }
         def rewind
-          @input.rewind if @input.respond_to?(:rewind)
+          return unless @input.respond_to?(:rewind)
+
+          result = @input.rewind
           @buffer = +"".b
+          result
         end
 
         sig { returns(T.untyped) }
