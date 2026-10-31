@@ -144,11 +144,11 @@ class TestClientTransport < Minitest::Test
     assert_equal "402", response.code
   end
 
-  def test_skips_unrecognized_method
+  def test_raises_for_unrecognized_initial_payment_method
     challenge = Mpp::Challenge.create(
       secret_key: "test-secret",
       realm: "api.example.com",
-      method: "unknown_method",
+      method: "unknown",
       intent: "charge",
       request: {"amount" => "1000000"},
       expires: Mpp::Expires.minutes(5)
@@ -158,9 +158,62 @@ class TestClientTransport < Minitest::Test
     stub_request(:get, "https://api.example.com/resource")
       .to_return(status: 402, headers: {"WWW-Authenticate" => www_auth})
 
+    seen = []
+    @transport.on_payment_failed { |payload| seen << payload }
+
+    error = assert_raises(Mpp::PaymentMethodUnsupportedError) do
+      @transport.get("https://api.example.com/resource")
+    end
+
+    assert_includes error.message, "unknown/charge"
+    assert_equal 1, seen.length
+    assert_same error, seen.first[:error]
+    assert_equal [challenge.id], seen.first[:challenges].map(&:id)
+    assert_equal "402", seen.first[:response].code
+    assert_equal "https://api.example.com/resource", seen.first[:input]
+    assert_requested(:get, "https://api.example.com/resource", times: 1)
+  end
+
+  def test_returns_unhandleable_post_payment_response
+    challenge = Mpp::Challenge.create(
+      secret_key: "test-secret", realm: "api.example.com", method: "tempo",
+      intent: "charge", request: {"amount" => "1000000"}, expires: Mpp::Expires.minutes(5)
+    )
+    unsupported = Mpp::Challenge.create(
+      secret_key: "test-secret", realm: "api.example.com", method: "other",
+      intent: "charge", request: {"amount" => "1000000"}, expires: Mpp::Expires.minutes(5)
+    )
+    seen = []
+    @transport.on_payment_failed { |payload| seen << payload }
+    stub_request(:get, "https://api.example.com/resource")
+      .to_return(status: 402, headers: {"WWW-Authenticate" => challenge.to_www_authenticate("api.example.com")})
+      .then.to_return(status: 402, headers: {"WWW-Authenticate" => unsupported.to_www_authenticate("api.example.com")})
+
     response = @transport.get("https://api.example.com/resource")
 
     assert_equal "402", response.code
+    assert_equal 1, seen.length
+    assert_instance_of Mpp::VerificationFailedError, seen.first[:error]
+    assert_requested(:get, "https://api.example.com/resource", times: 2)
+  end
+
+  def test_raises_with_all_unsupported_initial_challenges
+    challenges = ["other", "unknown"].map do |name|
+      Mpp::Challenge.create(
+        secret_key: "test-secret", realm: "api.example.com", method: name,
+        intent: "charge", request: {"amount" => "1000000"}, expires: Mpp::Expires.minutes(5)
+      )
+    end
+    seen = []
+    @transport.on_payment_failed { |payload| seen << payload }
+    stub_request(:get, "https://api.example.com/resource")
+      .to_return(status: 402, headers: {"WWW-Authenticate" => challenges.map { |c| c.to_www_authenticate("api.example.com") }.join(", ")})
+
+    assert_raises(Mpp::PaymentMethodUnsupportedError) { @transport.get("https://api.example.com/resource") }
+
+    assert_equal 1, seen.length
+    assert_equal challenges.map(&:id), seen.first[:challenges].map(&:id)
+    assert_requested(:get, "https://api.example.com/resource", times: 1)
   end
 
   def test_emits_client_lifecycle_events
