@@ -33,7 +33,7 @@ module Mpp
 
         def for_chain_id(chain_id)
           case chain_id
-          when Defaults::CHAIN_ID, Defaults::TESTNET_CHAIN_ID
+          when Defaults::TESTNET_CHAIN_ID
             TESTNET
           else
             DEFAULT
