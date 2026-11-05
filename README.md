@@ -346,6 +346,23 @@ Then test with [mppx](https://www.npmjs.com/package/mppx), a CLI that handles th
 npx mppx http://localhost:4567/paid
 ```
 
+## Conformance testing
+
+The conformance suite lives in [mpp-tools](https://github.com/tempoxyz/mpp-tools). From this repository's root, use Ruby 3.3 or newer, Node 22.18 or newer, and `uv` to run its Ruby adapter against the current checkout:
+
+```sh
+sdk_path="$(pwd)"
+git clone https://github.com/tempoxyz/mpp-tools.git ../mpp-tools
+cd ../mpp-tools/conformance
+make install-runner
+make use-local-sdk ADAPTER=ruby SDK_PATH="$sdk_path"
+make install-ruby
+make test-sdk ADAPTER=ruby
+make flow-sdk ADAPTER=ruby
+```
+
+This uses the current `mpp-tools` `main` vectors. To reproduce a particular CI run, check out the conformance commit recorded in that job's log before installing the runner.
+
 ## Support Matrix
 
 | Method | Charge Client | Charge Server |

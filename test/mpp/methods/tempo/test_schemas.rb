@@ -21,11 +21,18 @@ class TestSchemas < Minitest::Test
       "amount" => "1000000",
       "currency" => "0x20c0000000000000000000000000000000000000",
       "recipient" => "0x1234567890abcdef1234567890abcdef12345678",
-      "methodDetails" => {"chainId" => 42_431, "feePayer" => true}
+      "methodDetails" => {
+        "chainId" => 42_431,
+        "feePayer" => true,
+        "splits" => [{"amount" => "300", "recipient" => "0x1234567890abcdef1234567890abcdef12345678"}],
+        "supportedModes" => ["push"]
+      }
     )
 
     assert_equal 42_431, request.method_details.chain_id
     assert request.method_details.fee_payer
+    assert_equal "300", request.method_details.splits.first["amount"]
+    assert_equal ["push"], request.method_details.supported_modes
   end
 
   def test_charge_request_rejects_invalid_currency
@@ -104,5 +111,7 @@ class TestSchemas < Minitest::Test
     assert_equal 4217, md.chain_id
     refute md.fee_payer
     assert_nil md.fee_payer_url
+    assert_nil md.splits
+    assert_nil md.supported_modes
   end
 end

@@ -63,6 +63,57 @@ class TestTempoChargeIntent < Minitest::Test
     assert_match(/memo is not bound to this challenge/, error.message)
   end
 
+  def test_hash_receipt_matches_each_split_in_any_log_order
+    splits = [
+      {"amount" => "0300", "recipient" => SOURCE_ADDR},
+      {"amount" => "0200", "recipient" => RELAYER}
+    ]
+    request = request_hash.merge("amount" => "01000", "methodDetails" => {"splits" => splits})
+    logs = [
+      transfer_log(recipient: RELAYER, amount: 200),
+      transfer_log(recipient: RECIPIENT, amount: 500),
+      transfer_log(memo: bound_memo, recipient: RECIPIENT, amount: 500),
+      transfer_log(recipient: SOURCE_ADDR, amount: 300)
+    ]
+
+    assert_equal HASH, verify_hash(receipt(logs), challenge_id: "challenge-123", request: request).reference
+  end
+
+  def test_hash_receipt_rejects_missing_or_redirected_split
+    splits = [{"amount" => "300", "recipient" => SOURCE_ADDR}]
+    request = request_hash.merge("methodDetails" => {"splits" => splits})
+    primary = [transfer_log(recipient: RECIPIENT, amount: 700),
+      transfer_log(memo: bound_memo, recipient: RECIPIENT, amount: 700)]
+
+    assert_raises(Mpp::VerificationError) do
+      verify_hash(receipt(primary), challenge_id: "challenge-123", request: request)
+    end
+    redirected = [transfer_log(recipient: RECIPIENT, amount: 1000),
+      transfer_log(memo: bound_memo, recipient: RECIPIENT, amount: 1000)]
+    assert_raises(Mpp::VerificationError) do
+      verify_hash(receipt(redirected), challenge_id: "challenge-123", request: request)
+    end
+  end
+
+  def test_hash_receipt_does_not_count_paired_memo_as_another_transfer
+    request = request_hash.merge("methodDetails" => {
+      "splits" => [{"amount" => "500", "recipient" => RECIPIENT}]
+    })
+    logs = [transfer_log(recipient: RECIPIENT, amount: 500),
+      transfer_log(memo: bound_memo, recipient: RECIPIENT, amount: 500)]
+
+    assert_raises(Mpp::VerificationError) do
+      verify_hash(receipt(logs), challenge_id: "challenge-123", request: request)
+    end
+  end
+
+  def test_hash_receipt_parses_total_amount_as_decimal
+    request = request_hash.merge("amount" => "0001000")
+    logs = [transfer_log, transfer_log(memo: bound_memo)]
+
+    assert_equal HASH, verify_hash(receipt(logs), challenge_id: "challenge-123", request: request).reference
+  end
+
   def test_initialize_rejects_nil_store
     error = assert_raises(ArgumentError) do
       Mpp::Methods::Tempo::ChargeIntent.new(store: nil)
@@ -959,12 +1010,24 @@ class TestTempoChargeIntent < Minitest::Test
     assert_match(/not allowed by fee payer policy/, error.message)
   end
 
-  def test_hash_validation_preserves_zero_amount_payments
+  def test_hash_validation_rejects_zero_amount_payments
     request = request_hash.merge("amount" => "0")
-    log = transfer_log(memo: bound_memo).merge("data" => "0x#{"0" * 64}")
-    Mpp::Methods::Tempo::Rpc.stub(:call, receipt([log])) do
-      assert @intent.validate(hash_credential, request)
-      assert_equal HASH, @intent.broadcast(hash_credential, request).reference
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_) { flunk "zero amount must not query a receipt" }) do
+      assert_raises(Mpp::VerificationError) { @intent.validate(hash_credential, request) }
+      assert_raises(Mpp::VerificationError) { @intent.broadcast(hash_credential, request) }
+    end
+  end
+
+  def test_hash_validation_honors_supported_modes
+    request = request_hash.merge("methodDetails" => {"supportedModes" => ["pull"]})
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_) { flunk "disallowed mode must not query a receipt" }) do
+      assert_raises(Mpp::VerificationError) { @intent.validate(hash_credential, request) }
+    end
+
+    allowed = request_hash.merge("methodDetails" => {"supportedModes" => ["push"]})
+    logs = [transfer_log, transfer_log(memo: bound_memo)]
+    Mpp::Methods::Tempo::Rpc.stub(:call, receipt(logs)) do
+      assert @intent.validate(hash_credential, allowed)
     end
   end
 
@@ -1032,7 +1095,7 @@ class TestTempoChargeIntent < Minitest::Test
     )
   end
 
-  def verify_hash(receipt, challenge_id:)
+  def verify_hash(receipt, challenge_id:, request: request_hash)
     credential = Mpp::Credential.new(
       challenge: Mpp::ChallengeEcho.new(
         id: challenge_id,
@@ -1049,7 +1112,7 @@ class TestTempoChargeIntent < Minitest::Test
       assert_equal [HASH], params
       receipt
     }) do
-      @intent.verify(credential, request_hash)
+      @intent.verify(credential, request)
     end
   end
 
@@ -1065,18 +1128,18 @@ class TestTempoChargeIntent < Minitest::Test
     {"status" => "0x1", "from" => SENDER, "logs" => logs}
   end
 
-  def transfer_log(memo: nil, from: SENDER)
+  def transfer_log(memo: nil, from: SENDER, recipient: RECIPIENT, amount: 1000)
     topics = [
       memo ? Mpp::Methods::Tempo::TRANSFER_WITH_MEMO_TOPIC : Mpp::Methods::Tempo::TRANSFER_TOPIC,
       topic_address(from),
-      topic_address(RECIPIENT)
+      topic_address(recipient)
     ]
     topics << memo if memo
 
     {
       "address" => CURRENCY,
       "topics" => topics,
-      "data" => "0x#{1000.to_s(16).rjust(64, "0")}"
+      "data" => "0x#{amount.to_s(16).rjust(64, "0")}"
     }
   end
 

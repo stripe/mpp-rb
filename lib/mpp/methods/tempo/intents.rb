@@ -128,6 +128,15 @@ module Mpp
             raise Mpp::VerificationError, "Invalid credential payload"
           end
 
+          mode = validation_mode(credential)
+          if decimal_amount(req.amount).zero? && mode != "proof"
+            raise Mpp::VerificationError, "Zero-amount challenges require a proof credential"
+          end
+          supported_modes = req.method_details.supported_modes
+          if supported_modes && (!supported_modes.is_a?(Array) || !supported_modes.include?(mode))
+            raise Mpp::VerificationError, "Credential mode is not supported by this challenge"
+          end
+
           case payload_data["type"]
           when "hash"
             payload = Schemas::HashCredentialPayload.new(type: "hash", hash: payload_data["hash"])
@@ -326,7 +335,9 @@ module Mpp
         end
 
         def match_transfer_logs(receipt, request, expected_sender: nil, source: nil, validate_sender: nil)
-          matched_logs = []
+          expected = expected_transfers(request)
+          transfer_logs = []
+          memo_logs = []
 
           (receipt["logs"] || []).each do |log|
             next unless log["address"]&.downcase == request.currency.downcase
@@ -337,8 +348,6 @@ module Mpp
             from_address = "0x#{topics[1][-40..]}"
             to_address = "0x#{topics[2][-40..]}"
 
-            next unless to_address.downcase == request.recipient.downcase
-
             matched =
               case topics[0]
               when TRANSFER_WITH_MEMO_TOPIC
@@ -348,20 +357,20 @@ module Mpp
                 next if data.length < 66
 
                 amount = data[2, 64].to_i(16)
-                next unless amount == Integer(request.amount)
-
-                {kind: :memo, memo: topics[3]}
+                {kind: :memo, memo: topics[3], amount: amount, recipient: to_address, sender: from_address}
               when TRANSFER_TOPIC
                 data = log.fetch("data", "0x")
                 next if data.length < 66
 
                 amount = data.delete_prefix("0x").to_i(16)
-                next unless amount == Integer(request.amount)
-
-                {kind: :transfer}
+                {kind: :transfer, amount: amount, recipient: to_address, sender: from_address}
               end
 
             next unless matched
+            next unless expected.any? do |transfer|
+              matched[:amount] == transfer[:amount] &&
+                matched[:recipient].downcase == transfer[:recipient].downcase
+            end
 
             # On a sender mismatch, validate_sender may authorize the log.
             if expected_sender && from_address.downcase != expected_sender.downcase
@@ -372,15 +381,94 @@ module Mpp
               )
             end
 
-            matched_logs << matched
+            if matched[:kind] == :memo
+              memo_logs << matched
+            else
+              transfer_logs << matched
+            end
           end
 
-          matched_logs.sort_by { |log| (log[:kind] == :memo) ? 0 : 1 }
+          used_transfers = []
+          used_memos = []
+          matched_logs = []
+          expected.each_with_index do |transfer, index|
+            match = ->(log) { log[:amount] == transfer[:amount] && log[:recipient].downcase == transfer[:recipient].downcase }
+            transfer_index = transfer_logs.each_index.find { |i| !used_transfers.include?(i) && match.call(transfer_logs[i]) }
+
+            if transfer_index
+              used_transfers << transfer_index
+              matched_logs << transfer_logs[transfer_index]
+            else
+              # A lone TransferWithMemo is accepted by older receipt providers,
+              # but the paired Transfer and memo must never count as two payments.
+              return [] if transfer_logs.any? { |log| match.call(log) }
+
+              memo_index = memo_logs.each_index.find do |i|
+                !used_memos.include?(i) && match.call(memo_logs[i]) &&
+                  (transfer[:memo].nil? || memo_logs[i][:memo]&.downcase == transfer[:memo].downcase)
+              end
+              return [] unless memo_index
+
+              used_memos << memo_index
+              matched_logs << memo_logs[memo_index].merge(primary: index.zero?)
+              next
+            end
+
+            memo_index = memo_logs.each_index.find do |i|
+              !used_memos.include?(i) && match.call(memo_logs[i]) &&
+                memo_logs[i][:sender].downcase == transfer_logs[transfer_index][:sender].downcase &&
+                (transfer[:memo].nil? || memo_logs[i][:memo]&.downcase == transfer[:memo].downcase)
+            end
+            return [] if transfer[:memo] && !memo_index
+            if memo_index
+              used_memos << memo_index
+              matched_logs << memo_logs[memo_index].merge(primary: index.zero?)
+            end
+          end
+
+          matched_logs
+        end
+
+        def expected_transfers(request)
+          total = decimal_amount(request.amount)
+          splits = request.method_details.splits || []
+          unless splits.is_a?(Array) && splits.length <= 10
+            raise Mpp::VerificationError, "Invalid charge request splits"
+          end
+
+          split_transfers = splits.map do |split|
+            unless split.is_a?(Hash) && split["recipient"].is_a?(String) && split["recipient"].match?(Schemas::HEX_PATTERN)
+              raise Mpp::VerificationError, "Invalid charge request split recipient"
+            end
+            amount = decimal_amount(split["amount"])
+            raise Mpp::VerificationError, "Split amount must be positive" unless amount.positive?
+
+            memo = split["memo"]
+            if memo && !(memo.is_a?(String) && memo.match?(/\A0x[a-fA-F0-9]{64}\z/))
+              raise Mpp::VerificationError, "Invalid charge request split memo"
+            end
+            {amount: amount, recipient: split["recipient"], memo: memo}
+          end
+
+          primary_amount = total - split_transfers.sum { |split| split[:amount] }
+          if primary_amount.negative? || (splits.any? && primary_amount.zero?)
+            raise Mpp::VerificationError, "Split total must be less than charge amount"
+          end
+          [{amount: primary_amount, recipient: request.recipient, memo: nil}, *split_transfers]
+        end
+
+        def decimal_amount(value)
+          return value if value.is_a?(Integer) && value >= 0
+          unless value.is_a?(String) && value.match?(/\A[0-9]+\z/)
+            raise Mpp::VerificationError, "Invalid charge amount"
+          end
+
+          value.to_i(10)
         end
 
         def assert_challenge_bound_memo(matched_logs, challenge)
           bound = matched_logs.any? do |log|
-            log[:kind] == :memo &&
+            log[:primary] && log[:kind] == :memo &&
               Attribution.verify_server(log[:memo], challenge.realm) &&
               Attribution.verify_challenge_binding(log[:memo], challenge.id)
           end
@@ -495,7 +583,7 @@ module Mpp
           decoded_amount = call_data_hex[72, 64].to_i(16)
 
           return false unless decoded_to.downcase == request.recipient.downcase
-          return false unless decoded_amount == Integer(request.amount)
+          return false unless decoded_amount == decimal_amount(request.amount)
           return false if call_data_hex.length < 200
 
           return false unless challenge
@@ -508,7 +596,7 @@ module Mpp
         end
 
         def validate_proof(payload, request, credential:)
-          raise Mpp::VerificationError, "Proof credentials are only valid for zero-amount challenges" unless Integer(request.amount).zero?
+          raise Mpp::VerificationError, "Proof credentials are only valid for zero-amount challenges" unless decimal_amount(request.amount).zero?
           raise Mpp::VerificationError, "Proof credential must include a source" unless credential.source
 
           resolved_chain_id = request.method_details.chain_id
