@@ -90,6 +90,10 @@ jobs:
         env:
           TEMPO_RPC_URL: http://localhost:8545
 
+      - name: Show Tempo logs on failure
+        if: failure()
+        run: docker compose logs
+
       - name: Stop Tempo devnet
         if: always()
         run: docker compose down
