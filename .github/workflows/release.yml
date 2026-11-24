@@ -28,3 +28,34 @@ jobs:
         run: bundle install --without development test
 
       - uses: rubygems/release-gem@7f9650160c1a4e7989fdc9855807bdbd421d8b6b # v1.4.1
+        with:
+          # rubygems-await 0.5.4 fails on the runner's CompactIndexClient::Cache.
+          await-release: "false"
+
+      - name: Verify published gem
+        run: |
+          gems=(pkg/*.gem)
+          if [ "${#gems[@]}" -ne 1 ] || [ ! -f "${gems[0]}" ]; then
+            echo "Expected exactly one built gem in pkg/" >&2
+            exit 1
+          fi
+
+          artifact="${gems[0]}"
+          filename="$(basename "$artifact")"
+          download_dir="$(mktemp -d)"
+
+          for attempt in {1..24}; do
+            if curl -fsSL --max-time 15 "https://rubygems.org/downloads/$filename" -o "$download_dir/$filename"; then
+              if cmp -s "$artifact" "$download_dir/$filename"; then
+                echo "Published $filename matches the built gem"
+                exit 0
+              fi
+              echo "Published $filename differs from the built gem" >&2
+              exit 1
+            fi
+            echo "Waiting for $filename on RubyGems.org ($attempt/24)"
+            sleep 5
+          done
+
+          echo "$filename did not appear on RubyGems.org" >&2
+          exit 1
