@@ -1010,11 +1010,16 @@ class TestTempoChargeIntent < Minitest::Test
     assert_match(/not allowed by fee payer policy/, error.message)
   end
 
-  def test_hash_validation_rejects_zero_amount_payments
+  def test_payment_credentials_reject_zero_amount_challenges_before_rpc
     request = request_hash.merge("amount" => "0")
-    Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_) { flunk "zero amount must not query a receipt" }) do
-      assert_raises(Mpp::VerificationError) { @intent.validate(hash_credential, request) }
-      assert_raises(Mpp::VerificationError) { @intent.broadcast(hash_credential, request) }
+    credentials = [hash_credential, transaction_credential("unused", challenge_id: "challenge-123")]
+    Mpp::Methods::Tempo::Rpc.stub(:call, ->(*_) { flunk "zero amount must not call RPC" }) do
+      credentials.each do |credential|
+        error = assert_raises(Mpp::VerificationError) { @intent.validate(credential, request) }
+        assert_match(/Zero-amount challenges require a proof credential/, error.message)
+        error = assert_raises(Mpp::VerificationError) { @intent.broadcast(credential, request) }
+        assert_match(/Zero-amount challenges require a proof credential/, error.message)
+      end
     end
   end
 
