@@ -26,4 +26,4 @@ jobs:
     uses: tempoxyz/mpp-tools/.github/workflows/sdk-conformance.yml@877e89a4076bfac890d518974b290fc13c58f49c # main
     with:
       adapter: ruby
-      conformance-ref: 877e89a4076bfac890d518974b290fc13c58f49c
+      conformance-ref: c5dde8faa684b79e2df665143cf7cd731608c079
