@@ -21,18 +21,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  conformance-policy:
-    uses: tempoxyz/mpp-tools/.github/workflows/sdk-conformance-policy.yml@c5dde8faa684b79e2df665143cf7cd731608c079 # main
-    with:
-      protocol-paths: |
-        lib/**
-        Gemfile
-        Gemfile.lock
-        mpp-rb.gemspec
-
   conformance:
-    needs: conformance-policy
-    uses: tempoxyz/mpp-tools/.github/workflows/sdk-conformance.yml@c5dde8faa684b79e2df665143cf7cd731608c079 # main
+    uses: tempoxyz/mpp-tools/.github/workflows/sdk-conformance.yml@877e89a4076bfac890d518974b290fc13c58f49c # main
     with:
       adapter: ruby
-      conformance-ref: ${{ needs.conformance-policy.outputs.conformance_ref }}
+      conformance-ref: 877e89a4076bfac890d518974b290fc13c58f49c
