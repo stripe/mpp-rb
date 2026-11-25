@@ -222,6 +222,7 @@ module Mpp
             end
           end
 
+          raw_tx = canonicalize_transaction(raw_tx)
           rpc_url = get_rpc_url
           reserved_tx_hash = raw_transaction_hash(raw_tx)
           store_key = "mpp:charge:#{reserved_tx_hash.downcase}"
@@ -229,7 +230,8 @@ module Mpp
             raise Mpp::VerificationError, "Transaction hash already used" unless @store.get(store_key) == TRANSACTION_PENDING
 
             receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
-            verify_transaction_receipt!(receipt_data, request, credential: credential)
+            verify_transaction_receipt!(receipt_data, request, credential: credential,
+              expected_hash: reserved_tx_hash)
             claim_settlement!(reserved_tx_hash)
             @store.put(store_key, TRANSACTION_VERIFIED)
             return Mpp::Receipt.success(reserved_tx_hash)
@@ -248,16 +250,26 @@ module Mpp
           begin
             tx_hash = Rpc.call(rpc_url, "eth_sendRawTransaction", [raw_tx])
           rescue => e
-            if transaction_submission_may_have_succeeded?(e)
-              receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
-              verify_transaction_receipt!(receipt_data, request, credential: credential)
-              claim_settlement!(reserved_tx_hash)
-              @store.put(store_key, TRANSACTION_VERIFIED)
-              return Mpp::Receipt.success(reserved_tx_hash)
+            # An RPC error does not prove the transaction was rejected: the
+            # node may have included it before its reply failed. Keep the
+            # reservation for uncertain outcomes so retries only check the
+            # receipt and never submit the signed transaction again.
+            definitely_failed = transaction_submission_definitely_failed?(e)
+            begin
+              receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash,
+                attempts: definitely_failed ? 1 : MAX_RECEIPT_RETRY_ATTEMPTS)
+            rescue Mpp::TransactionPendingError
+              raise unless definitely_failed
+
+              @store.delete(store_key)
+              raise Mpp::VerificationError, "Transaction submission failed: #{e.message}"
             end
 
-            @store.delete(store_key)
-            raise Mpp::VerificationError, "Transaction submission failed: #{e.message}"
+            verify_transaction_receipt!(receipt_data, request, credential: credential,
+              expected_hash: reserved_tx_hash)
+            claim_settlement!(reserved_tx_hash)
+            @store.put(store_key, TRANSACTION_VERIFIED)
+            return Mpp::Receipt.success(reserved_tx_hash)
           end
 
           unless tx_hash
@@ -275,7 +287,8 @@ module Mpp
           store_key, reserved_tx_hash = rebase_reservation_to_chain_hash(store_key, reserved_tx_hash, tx_hash)
 
           receipt_data = fetch_transaction_receipt(rpc_url, reserved_tx_hash)
-          verify_transaction_receipt!(receipt_data, request, credential: credential)
+          verify_transaction_receipt!(receipt_data, request, credential: credential,
+            expected_hash: reserved_tx_hash)
           claim_settlement!(raw_tx_hash, reserved_tx_hash)
           @store.put(store_key, TRANSACTION_VERIFIED)
           @store.put(raw_store_key, TRANSACTION_VERIFIED) if raw_store_key != store_key
@@ -291,24 +304,18 @@ module Mpp
           end
         end
 
-        def transaction_submission_may_have_succeeded?(error)
+        def transaction_submission_definitely_failed?(error)
           message = "#{error.class}: #{error.message}".downcase
-
-          message.include?("timeout") ||
-            message.include?("timed out") ||
-            message.include?("already known") ||
-            message.include?("already imported") ||
-            message.include?("known transaction") ||
-            message.include?("transaction already exists")
+          message.include?("insufficient funds")
         end
 
-        def fetch_transaction_receipt(rpc_url, tx_hash)
+        def fetch_transaction_receipt(rpc_url, tx_hash, attempts: MAX_RECEIPT_RETRY_ATTEMPTS)
           receipt_data = T.let(nil, T.untyped)
-          MAX_RECEIPT_RETRY_ATTEMPTS.times do |attempt|
+          attempts.times do |attempt|
             receipt_data = Rpc.call(rpc_url, "eth_getTransactionReceipt", [tx_hash])
             break if receipt_data
 
-            sleep(RECEIPT_RETRY_DELAY_SECONDS) if attempt < MAX_RECEIPT_RETRY_ATTEMPTS - 1
+            sleep(RECEIPT_RETRY_DELAY_SECONDS) if attempt < attempts - 1
           end
 
           unless receipt_data
@@ -319,7 +326,11 @@ module Mpp
           receipt_data
         end
 
-        def verify_transaction_receipt!(receipt_data, request, credential:)
+        def verify_transaction_receipt!(receipt_data, request, credential:, expected_hash: nil)
+          if expected_hash && receipt_data["transactionHash"] &&
+              normalize_tx_hash(receipt_data["transactionHash"]) != normalize_tx_hash(expected_hash)
+            raise Mpp::VerificationError, "Transaction receipt hash does not match submitted transaction"
+          end
           raise Mpp::VerificationError, "Transaction reverted" unless receipt_data["status"] == "0x1"
           source_address = parse_credential_source(credential.source, request.method_details.chain_id)
           matched_logs = match_transfer_logs(receipt_data, request, expected_sender: source_address || receipt_data["from"])
@@ -550,6 +561,21 @@ module Mpp
           end
 
           "0x#{Attribution.keccak256([hex].pack("H*")).unpack1("H*")}"
+        end
+
+        # Tempo nodes normalize a 65-byte signature's raw recovery ID (0/1)
+        # to its Electrum encoding (27/28) before hashing the transaction.
+        # Submit that canonical envelope so a receipt can be found even if the
+        # broadcast reply containing the node's hash is lost.
+        def canonicalize_transaction(raw_tx)
+          hex = raw_tx.delete_prefix("0x")
+          return raw_tx unless %w[76 78].include?(hex[0, 2]&.downcase)
+          return raw_tx unless hex[-134, 4]&.downcase == "b841"
+
+          recovery_id = hex[-2, 2]
+          return raw_tx unless %w[00 01].include?(recovery_id)
+
+          "0x#{hex[0...-2]}#{(recovery_id.to_i(16) + 27).to_s(16)}"
         end
 
         def normalize_tx_hash(tx_hash)
